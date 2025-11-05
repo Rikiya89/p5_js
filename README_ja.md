@@ -1,66 +1,29 @@
-# p5.js へようこそ
+# 毎日の p5.js 練習
 
-p5.js ライブラリ一式の ZIP ファイルをダウンロードしていただきありがとうございます！
+このリポジトリには、p5.js で学習・実験しながら作成している日々のスケッチを保存しています。各フォルダごとに 1 日分の試行がまとまっています。
 
-# p5 フォルダの内容
+## ディレクトリ概要
 
-* p5.js ファイル
-* p5.min.js ファイル
-* addons フォルダ
-  * p5.sound.js
-  * p5.sound.min.js
-* empty-example フォルダ
-  * index.html
-  * p5.js
-  * p5.sound.js
-  * sketch.js
+* `2025xxxx/` フォルダ: 日付付きスケッチ。`index.html`、`sketch.js`、メモなどをその日にまとめています。
+* `Flower_Arrangement/`: 参考として残している単独スケッチです。
+* `p5_js/`: 新しいアイデアを始めるときに使う最小構成のスターターファイル。
+* `addons/`、`p5.js`、`p5.min.js`: 各スケッチで利用するライブラリ一式。
+* `empty-example/`: 必要に応じて複製して使う空のテンプレート。
 
-## p5.js
+## 実行方法
 
-このファイルには完全な p5.js ライブラリが含まれます。人間にも読みやすい構成なので、内容を自由に閲覧できます。一般的なミスをサポートする親切なエラー表示も備えています。
+1. 確認したいスケッチのフォルダでターミナルを開きます。
+2. 簡単な HTTP サーバーを起動します（例: `python -m http.server`）。
+3. ブラウザで `index.html` にアクセスするとスケッチが表示されます。
 
-## p5.min.js
+## 参考リンク
 
-このファイルは p5.js を縮小（ミニファイ）したバージョンです。同じ機能をより小さなファイルサイズで提供しますが、人間には読みづらく、親切なエラー表示は含まれません。
-
-## addons フォルダ
-
-addons フォルダには p5.js 関連の追加ライブラリが、オリジナル版と縮小版の両方で収録されています。
-
-### p5.sound.js, p5.sound.min.js
-
-p5.sound は音声入力・再生・解析・合成などの Web Audio 機能を p5.js に追加します。
-
-## empty-example フォルダ
-
-empty-example はウェブサイトの空テンプレートです。フォルダにはウェブサイト用の index.html、p5.js ライブラリ、その他の関連ライブラリ、そしてコードを書き始めるためのテンプレート `sketch.js` が含まれています。
-
-### index.html
-
-index.html は HTML ファイルのテンプレートです。このファイルではフォルダ内のライブラリ（p5.js、p5.sound.js）を読み込んだ後、`sketch.js` を実行して自分のコードを動かします。
-
-### sketch.js
-
-sketch.js は p5.js スケッチのテンプレートです。`setup()` と `draw()` 関数の骨組みが用意されており、自由に書き加えることができます。
-
-## README.txt
-
-この README は Markdown 形式で記述されています。
-
-# 次のステップ
-
-より詳しい情報が必要な場合は、公式サイトをご覧ください。  
-https://p5js.org/tutorials/get-started/ および https://p5js.org/tutorials/
-
-p5.js ライブラリのオンラインリファレンスはこちらです。  
-https://p5js.org/reference/
-
-empty-example を含むウェブサイトを動かすには、ローカルサーバーを有効にする必要があります。こちらのチュートリアルをご参照ください。  
+p5.js を詳しく調べたいときに参照しているページです。  
+https://p5js.org/tutorials/get-started/  
+https://p5js.org/tutorials/  
+https://p5js.org/reference/  
 https://github.com/processing/p5.js/wiki/Local-server
 
-p5.js はコミュニティによって作られ、支えられています。私たちについてもっと知りたい場合は、以下をご覧ください。  
-https://p5js.org/community/
+## ライセンス
 
-# ライセンス
-
-p5.js ライブラリはフリーソフトウェアです。フリーソフトウェア財団が定める GNU Lesser General Public License（バージョン 2.1）のもとで再配布および改変することができます。
+同梱している p5.js ライブラリは、GNU Lesser General Public License バージョン 2.1 の下で提供されています。
