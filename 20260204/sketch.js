@@ -302,12 +302,12 @@ function draw() {
     brightness += vel * 3;
     brightness = constrain(brightness, 50, 255);
 
-    let size = map(distFromCam, 150, 800, 2.5, 0.8);
+    let size = map(distFromCam, 150, 800, 5, 2); // Larger particles (was 2.5, 0.8)
 
     // Glow effect for bright particles
     if (brightness > 200) {
       stroke(255, brightness * 0.3);
-      strokeWeight(size + 2);
+      strokeWeight(size + 4); // Larger glow (was size + 2)
       point(p.x, p.y, p.z);
     }
 
@@ -368,18 +368,18 @@ function draw() {
       let brightness = map(distFromCam, 150, 700, 220, 60);
       brightness *= alpha;
 
-      let weight = map(t, 0, 1, 2.5, 0.3);
+      let weight = map(t, 0, 1, 5, 1); // Thicker trails (was 2.5, 0.3)
 
       stroke(255, brightness);
       strokeWeight(weight);
       line(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
     }
 
-    // Glowing head
+    // Glowing head - larger
     let head = trail.points[0];
     for (let g = 0; g < 3; g++) {
-      stroke(255, 150 - g * 40);
-      strokeWeight(4 - g);
+      stroke(255, 180 - g * 50);
+      strokeWeight(8 - g * 2); // Larger head glow (was 4 - g)
       point(head.x, head.y, head.z);
     }
   }
@@ -407,7 +407,7 @@ function draw() {
       brightness *= map(ring.baseRadius, 150, 500, 1, 0.4);
 
       stroke(brightness);
-      strokeWeight(0.8);
+      strokeWeight(2); // Larger ring points (was 0.8)
       point(x, y, z);
     }
   }
@@ -429,19 +429,19 @@ function draw() {
     let distFromCam = dist(x, y, z, camX, camY, camZ);
     let brightness = map(distFromCam, 50, 500, 255, 150);
 
-    // Multi-glow
+    // Multi-glow - larger core
     stroke(255, brightness * 0.4);
-    strokeWeight(4);
+    strokeWeight(8); // (was 4)
     point(x, y, z);
 
     stroke(brightness);
-    strokeWeight(2);
+    strokeWeight(4); // (was 2)
     point(x, y, z);
   }
 
   // ===== SUBTLE GEOMETRY GUIDES =====
-  stroke(255, 8);
-  strokeWeight(0.3);
+  stroke(255, 15); // Slightly brighter (was 8)
+  strokeWeight(1); // Thicker lines (was 0.3)
   noFill();
 
   // Rotating triangular frame
