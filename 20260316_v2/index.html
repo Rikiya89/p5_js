@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Mandala Point Cloud</title>
+  <script src="../p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #000;
+      font-family: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #b0ffe8;
+    }
+    canvas {
+      display: block;
+      width: min(100vw, calc(100vh * 1080 / 1920));
+      height: min(100vh, calc(100vw * 1920 / 1080));
+      box-shadow:
+        0 26px 110px rgba(0, 0, 0, 0.72),
+        0 0 60px rgba(0, 255, 135, 0.04);
+    }
+    #controls {
+      position: fixed;
+      top: 18px;
+      left: 18px;
+      min-width: 250px;
+      background: linear-gradient(165deg, rgba(13, 31, 45, 0.92), rgba(10, 61, 46, 0.5));
+      padding: 15px 16px 14px;
+      border-radius: 16px;
+      color: #b0ffe8;
+      z-index: 100;
+      border: 1px solid rgba(0, 255, 135, 0.15);
+      backdrop-filter: blur(18px);
+      box-shadow:
+        0 20px 50px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(176, 255, 232, 0.06);
+    }
+    #controls strong {
+      color: #00ff87;
+      letter-spacing: 0.14em;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #controls > div:first-child { margin-bottom: 8px; }
+    button {
+      background: linear-gradient(180deg, rgba(41, 48, 57, 0.82), rgba(13, 31, 45, 0.98));
+      color: #c4f0ff;
+      border: 1px solid rgba(0, 212, 255, 0.2);
+      padding: 8px 14px;
+      margin: 4px 6px 0 0;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      letter-spacing: 0.08em;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+    button:hover {
+      background: linear-gradient(180deg, rgba(0, 212, 255, 0.18), rgba(13, 31, 45, 0.98));
+      border-color: rgba(0, 255, 135, 0.4);
+      transform: translateY(-1px);
+    }
+    button:disabled {
+      background: rgba(13, 31, 45, 0.92);
+      color: #3a5a50;
+      cursor: not-allowed;
+      border-color: rgba(0, 255, 135, 0.06);
+      transform: none;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #c4f0ff;
+      letter-spacing: 0.05em;
+    }
+    #info {
+      font-size: 11px;
+      color: #5a8a7a;
+      margin-top: 7px;
+      line-height: 1.75;
+    }
+    #info span { color: #b0ffe8; }
+    #downloadLink {
+      display: inline-block;
+      margin-top: 10px;
+      color: #00ff87;
+      text-decoration: none;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid rgba(0, 255, 135, 0.4);
+      padding-bottom: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div><strong>3D MANDALA CLOUD</strong></div>
+    <button id="startBtn" onclick="startRecording()">Record</button>
+    <button id="stopBtn" onclick="stopRecording()" disabled>Stop</button>
+    <button id="downloadBtn" onclick="downloadLatestRecording()" disabled>Save MP4</button>
+    <div id="status">Ready</div>
+    <div id="info">
+      Duration: <span id="duration">0.0</span>s / <span id="maxDuration">24</span>s<br>
+      Frames:   <span id="frameCount">0</span><br>
+      Canvas:   <span id="canvasSize">-</span><br>
+      Theme:    <span>Morphing Mandala Point Cloud</span><br>
+      Format:   MP4 · 60 fps · H.264<br>
+      Shortcut: <span>R</span> to start / stop<br>
+      Export:   <span>Use Save MP4 after finalize</span>
+    </div>
+    <a id="downloadLink" href="#" download hidden>Download MP4</a>
+  </div>
+  <script src="sketch.js"></script>
+</body>
+</html>
