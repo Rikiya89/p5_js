@@ -12,8 +12,8 @@ const BG = [0, 0, 0];
 
 /* ───────────────────── Config ───────────────────── */
 const UNIT_R        = 130;
-const NUM_DUST      = 250;
-const NUM_SNOW      = 80;
+const NUM_DUST      = 350;
+const NUM_SNOW      = 120;
 const NUM_ORBIT_PTS = 8;
 
 /* ───────────────────── State ───────────────────── */
@@ -25,6 +25,7 @@ let fc = 0, captureCanvas = null, captureCtx = null;
 let dustParticles = [];
 let snowParticles = [];
 let orbitPoints   = [];
+let vignetteGfx   = null;
 
 /* ───────────────────── Recording Boilerplate ───────────────────── */
 function startRecording() {
@@ -94,30 +95,42 @@ function smoothstep(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
-/* multi-layer glow sphere — 3 shells for soft bloom */
+/* multi-layer glow sphere — 5 shells for luminous bloom */
 function glowSphere(x, y, z, baseR, brightness) {
   push();
   translate(x, y, z);
   noStroke();
   const b = brightness;
-  const v1 = 255 * 0.08 * b;
+  // Outermost haze — wide and visible
+  const v0 = 255 * 0.12 * b;
+  emissiveMaterial(v0, v0, v0);
+  sphere(baseR * 6.0, 5, 5);
+  // Outer glow
+  const v1 = 255 * 0.28 * b;
   emissiveMaterial(v1, v1, v1);
-  sphere(baseR * 3.0, 5, 5);
-  const v2 = 255 * 0.3 * b;
+  sphere(baseR * 3.5, 6, 6);
+  // Mid shell
+  const v2 = 255 * 0.60 * b;
   emissiveMaterial(v2, v2, v2);
-  sphere(baseR * 1.4, 6, 6);
-  const v3 = 255 * 0.9 * b;
+  sphere(baseR * 1.8, 6, 6);
+  // Inner bright
+  const v3 = 255 * 0.85 * b;
   emissiveMaterial(v3, v3, v3);
-  sphere(baseR * 0.5, 6, 6);
+  sphere(baseR * 0.9, 8, 8);
+  // Hot core — near-white
+  const v4 = 255 * Math.min(1.0, b * 1.2);
+  emissiveMaterial(v4, v4, v4);
+  sphere(baseR * 0.35, 8, 8);
   pop();
 }
 
-/* ─────── stroke helper: 2-layer glow line drawing ─────── */
-function glowStroke(alpha, weight, _n) {
-  // always 2 layers: sharp core + soft glow (ignore n for perf)
+/* ─────── stroke helper: 4-layer glow line drawing ─────── */
+function glowStroke(alpha, weight) {
   return [
-    { a: alpha,       w: weight },
-    { a: alpha * 0.3, w: weight * 3.0 },
+    { a: alpha * 0.15, w: weight * 8.0 },   // wide haze
+    { a: alpha * 0.35, w: weight * 5.0 },   // outer glow
+    { a: alpha * 0.65, w: weight * 2.5 },   // soft glow
+    { a: alpha,        w: weight },          // sharp core
   ];
 }
 
@@ -133,10 +146,10 @@ function buildDust() {
       x: r * Math.sin(phi) * Math.cos(theta),
       y: -600 + rng() * 1200,
       z: r * Math.sin(phi) * Math.sin(theta),
-      size: 0.2 + rng() * 0.7,
+      size: 0.15 + rng() * 0.6,
       speed: 0.04 + rng() * 0.18,
       phase: rng() * TWO_PI,
-      brightness: 0.25 + rng() * 0.65,
+      brightness: 0.55 + rng() * 0.45,
     });
   }
 }
@@ -149,11 +162,11 @@ function buildSnow() {
       x: (rng() - 0.5) * 900,
       y: -600 + rng() * 1200,
       z: (rng() - 0.5) * 900,
-      fallSpeed: 8 + rng() * 18,
+      fallSpeed: 5 + rng() * 14,
       drift: (rng() - 0.5) * 0.6,
       size: 0.4 + rng() * 1.2,
       phase: rng() * TWO_PI,
-      brightness: 0.2 + rng() * 0.5,
+      brightness: 0.5 + rng() * 0.5,
     });
   }
 }
@@ -168,19 +181,37 @@ function buildOrbitPoints() {
   }
 }
 
+/* ───────────────────── Build Vignette Overlay ───────────────────── */
+function buildVignette() {
+  vignetteGfx = createGraphics(W, H);
+  vignetteGfx.noStroke();
+  const cx = W / 2, cy = H / 2;
+  const maxR = Math.sqrt(cx * cx + cy * cy);
+  const steps = 100;
+  for (let i = steps; i >= 0; i--) {
+    const t = i / steps;
+    const r = t * maxR;
+    // Gentle falloff — subtle dark edges, mostly transparent
+    const fade = Math.pow(1 - t, 0.4);
+    const a = fade * 80;
+    vignetteGfx.fill(0, 0, 0, a);
+    vignetteGfx.ellipse(cx, cy, r * 2, r * 2);
+  }
+}
+
 /* ───────────────────── Draw: Dust ───────────────────── */
 function drawDust(t) {
   noStroke();
   for (const d of dustParticles) {
     const flicker   = 0.3 + 0.7 * Math.sin(t * d.speed * 2 + d.phase);
     const intensity = d.brightness * flicker;
-    if (intensity < 0.08) continue;
-    const dx = d.x + Math.sin(t * d.speed + d.phase) * 10;
-    const dy = d.y + Math.cos(t * d.speed * 0.7 + d.phase * 1.3) * 8;
-    const dz = d.z + Math.sin(t * d.speed * 0.5 + d.phase * 0.7) * 10;
+    if (intensity < 0.06) continue;
+    const dx = d.x + Math.sin(t * d.speed + d.phase) * 12;
+    const dy = d.y + Math.cos(t * d.speed * 0.7 + d.phase * 1.3) * 10;
+    const dz = d.z + Math.sin(t * d.speed * 0.5 + d.phase * 0.7) * 12;
     push();
     translate(dx, dy, dz);
-    const v = 255 * 0.35 * intensity;
+    const v = 255 * 0.85 * intensity;
     emissiveMaterial(v, v, v);
     sphere(d.size, 4, 4);
     pop();
@@ -213,8 +244,8 @@ function drawComplexGrid(t) {
   // Radial lines
   for (let i = 0; i < 18; i++) {
     const angle = (i / 18) * TWO_PI + t * 0.005;
-    const alpha = (i % 3 === 0 ? 25 : 12) + 8 * pulse;
-    for (const g of glowStroke(alpha, 0.2, 3)) {
+    const alpha = (i % 3 === 0 ? 40 : 20) + 12 * pulse;
+    for (const g of glowStroke(alpha, 0.2)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       line(0, 0, 0, Math.cos(angle) * 400, 0, Math.sin(angle) * 400);
@@ -224,10 +255,10 @@ function drawComplexGrid(t) {
   // Concentric circles
   for (let r = 1; r <= 4; r++) {
     const radius = r * 90;
-    const isUnit = (r === 1); // ~130 ≈ UNIT_R
-    const alpha  = isUnit ? 55 + 20 * pulse : 14 + 8 * pulse;
+    const isUnit = (r === 1);
+    const alpha  = isUnit ? 80 + 30 * pulse : 25 + 12 * pulse;
     const w      = isUnit ? 0.6 : 0.2;
-    for (const g of glowStroke(alpha, w, isUnit ? 4 : 2)) {
+    for (const g of glowStroke(alpha, w)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -240,7 +271,7 @@ function drawComplexGrid(t) {
   }
 
   // Real & Imaginary axes — stronger
-  for (const g of glowStroke(50 + 20 * pulse, 0.5, 3)) {
+  for (const g of glowStroke(70 + 30 * pulse, 0.6)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     line(-400, 0, 0, 400, 0, 0);
@@ -256,8 +287,8 @@ function drawUnitCircle(t) {
   noFill();
   const p = 0.5 + 0.5 * Math.sin(t * 0.45);
 
-  // Unit circle — 4-layer bloom
-  for (const g of glowStroke(90 + 40 * p, 0.8, 4)) {
+  // Unit circle — luminous bloom
+  for (const g of glowStroke(130 + 50 * p, 1.0)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     beginShape();
@@ -272,14 +303,14 @@ function drawUnitCircle(t) {
   const theta = t * 0.35;
   const px = Math.cos(theta) * UNIT_R;
   const pz = Math.sin(theta) * UNIT_R;
-  glowSphere(px, 0, pz, 7, 1.2);
+  glowSphere(px, 0, pz, 8, 1.5);
 
   // Projection lines — cos & sin
-  for (const g of glowStroke(55 + 25 * p, 0.4, 3)) {
+  for (const g of glowStroke(80 + 35 * p, 0.5)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
-    line(px, 0, pz, px, 0, 0);  // → real axis
-    line(px, 0, pz, 0, 0, pz);  // → imag axis
+    line(px, 0, pz, px, 0, 0);
+    line(px, 0, pz, 0, 0, pz);
   }
 
   // Projection dots on axes
@@ -287,14 +318,14 @@ function drawUnitCircle(t) {
   glowSphere(0, 0, pz, 4, 0.8 + 0.3 * p);
 
   // Radius line
-  for (const g of glowStroke(70 + 25 * p, 0.5, 3)) {
+  for (const g of glowStroke(70 + 25 * p, 0.5)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     line(0, 0, 0, px, 0, pz);
   }
 
   // Arc from 0 → θ
-  for (const g of glowStroke(60, 0.5, 2)) {
+  for (const g of glowStroke(60, 0.5)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     beginShape();
@@ -309,7 +340,7 @@ function drawUnitCircle(t) {
   }
 
   // Vertical projection line from point to helix
-  for (const g of glowStroke(22, 0.3, 2)) {
+  for (const g of glowStroke(22, 0.3)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     line(px, 0, pz, px, -350, pz);
@@ -329,9 +360,9 @@ function drawHelices(t) {
   for (let n = 1; n <= numH; n++) {
     const brightness = 1.0 - (n - 1) * 0.14;
     const radius     = UNIT_R * (1.0 - (n - 1) * 0.06);
-    const baseAlpha  = (65 - (n - 1) * 8) * brightness;
+    const baseAlpha  = (95 - (n - 1) * 10) * brightness;
 
-    for (const g of glowStroke(baseAlpha, 0.35, 3)) {
+    for (const g of glowStroke(baseAlpha, 0.35)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -364,7 +395,7 @@ function drawHelices(t) {
     const x1    = Math.cos(theta) * r1,    z1 = Math.sin(theta) * r1;
     const x2    = Math.cos(theta * 2) * r2, z2 = Math.sin(theta * 2) * r2;
     const fade  = 0.3 + 0.7 * Math.sin(t * 0.8 + i * 0.5);
-    for (const g of glowStroke(20 * fade, 0.3, 2)) {
+    for (const g of glowStroke(20 * fade, 0.3)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       line(x1, y, z1, x2, y, z2);
@@ -381,7 +412,7 @@ function drawTorusKnot(t, p, q, R, r, yOff, alpha) {
   noFill();
 
   const segments = 200;
-  for (const g of glowStroke(alpha * 2.5, 0.45, 2)) {
+  for (const g of glowStroke(alpha * 3.5, 0.55)) {
     stroke(255, 255, 255, g.a);
     strokeWeight(g.w);
     beginShape();
@@ -404,7 +435,6 @@ function drawLissajous(t) {
   push();
   noFill();
 
-  // 3D Lissajous: x = A sin(at + δ), y = B sin(bt), z = C sin(ct + φ)
   const configs = [
     { a: 3, b: 2, c: 5, delta: PI / 2, phi: PI / 4, A: 90, B: 60, C: 90, yOff: -200, alpha: 45 },
     { a: 5, b: 4, c: 3, delta: PI / 3, phi: PI / 6, A: 80, B: 50, C: 80, yOff:  200, alpha: 38 },
@@ -415,7 +445,7 @@ function drawLissajous(t) {
     translate(0, cfg.yOff, 0);
     rotateY(t * 0.06);
 
-    for (const g of glowStroke(cfg.alpha, 0.3, 3)) {
+    for (const g of glowStroke(cfg.alpha, 0.3)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -450,7 +480,7 @@ function drawOrbitPoints(t) {
     push();
     noFill();
     const trailLen = 25;
-    for (const g of glowStroke(28 + 18 * pulse, 0.35, 2)) {
+    for (const g of glowStroke(28 + 18 * pulse, 0.35)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -521,7 +551,7 @@ function drawPolyhedra(t) {
     rotateZ(t * c.spin * 0.382);
     noFill();
 
-    for (const g of glowStroke(65 + 40 * pulse, 0.5, 3)) {
+    for (const g of glowStroke(90 + 55 * pulse, 0.6)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       switch (c.type) {
@@ -554,7 +584,7 @@ function drawFilaments(t) {
     const fadeOut  = 1 - smoothstep(4.5, 6, tOff % 6);
     const maxSeg  = Math.floor(reveal * 60);
 
-    for (const g of glowStroke(40 * fadeOut, 0.35, 3)) {
+    for (const g of glowStroke(65 * fadeOut, 0.45)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -588,10 +618,10 @@ function drawRadialWaves(t) {
   for (let w = 0; w < 5; w++) {
     const phase = (t * 0.04 + w * 0.2) % 1.0;
     const r     = phase * 450;
-    const alpha = (1 - phase) * 30;
+    const alpha = (1 - phase) * 55;
     if (alpha < 0.8) continue;
 
-    for (const g of glowStroke(alpha, 0.25, 3)) {
+    for (const g of glowStroke(alpha, 0.25)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -619,7 +649,7 @@ function drawBeams(t) {
     const z     = Math.sin(angle) * r;
     const pulse = 0.2 + 0.8 * Math.sin(t * 0.4 + i * 0.52);
 
-    for (const g of glowStroke(15 + 18 * pulse, 0.25, 3)) {
+    for (const g of glowStroke(25 + 30 * pulse, 0.35)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       line(x, -500, z, x, 500, z);
@@ -638,13 +668,15 @@ function drawCore(t) {
 
   noStroke();
 
-  // 5-layer radial bloom
+  // 7-layer radial bloom — bright luminous core
   const coreLayers = [
-    [85 + 25 * p3, 0.025],
-    [55 + 15 * p1, 0.065],
-    [35 + 10 * p2, 0.15],
-    [18 + 5 * p1,  0.35],
-    [6,             0.85],
+    [140 + 40 * p3, 0.03],
+    [110 + 30 * p3, 0.07],
+    [85 + 25 * p3,  0.14],
+    [55 + 15 * p1,  0.25],
+    [35 + 10 * p2,  0.50],
+    [18 + 5 * p1,   0.80],
+    [6,              1.0],
   ];
   for (const [r, mul] of coreLayers) {
     const v = 255 * mul;
@@ -659,7 +691,7 @@ function drawCore(t) {
     const a     = t * speed + r * (TWO_PI / 3);
     const ringR = 28 + r * 13 + 5 * Math.sin(t * 0.3 + r * 1.5);
 
-    for (const g of glowStroke(55 + 30 * p1, 0.5, 3)) {
+    for (const g of glowStroke(80 + 45 * p1, 0.6)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       push();
@@ -691,7 +723,7 @@ function drawEulerSpiral(t) {
 
   for (let mirror = 0; mirror < 2; mirror++) {
     const phaseOff = mirror * PI;
-    for (const g of glowStroke(45, 0.45, 3)) {
+    for (const g of glowStroke(70, 0.55)) {
       stroke(255, 255, 255, g.a);
       strokeWeight(g.w);
       beginShape();
@@ -726,6 +758,7 @@ function setup() {
   buildDust();
   buildSnow();
   buildOrbitPoints();
+  buildVignette();
 
   const m = document.getElementById("maxDuration");
   if (m) m.textContent = MAX_DURATION;
@@ -748,12 +781,12 @@ function draw() {
     0, 1, 0
   );
 
-  // Monochrome lighting — bright
-  ambientLight(14, 14, 14);
-  pointLight(100, 100, 100, 0, -450, 0);
-  pointLight(70, 70, 70, 350, -120, -350);
-  pointLight(50, 50, 50, -300, 120, 300);
-  pointLight(30, 30, 30, 0, 350, 0);
+  // Monochrome lighting — bright and dimensional
+  ambientLight(45, 45, 45);
+  pointLight(255, 255, 255, 0, -450, 0);
+  pointLight(200, 200, 200, 350, -120, -350);
+  pointLight(150, 150, 150, -300, 120, 300);
+  pointLight(100, 100, 100, 0, 350, 0);
 
   // --- Layers back → front ---
   drawDust(t);
@@ -771,6 +804,16 @@ function draw() {
   drawFilaments(t);
   drawPolyhedra(t);
   drawCore(t);
+
+  // Vignette overlay (2D on top of 3D)
+  push();
+  resetMatrix();
+  ortho();
+  noLights();
+  noStroke();
+  texture(vignetteGfx);
+  plane(W, H);
+  pop();
 
   // Recording
   if (isRecording) {

@@ -4,7 +4,7 @@
 const W = 1080;
 const H = 1920;
 const FPS = 60;
-const MAX_DURATION = 24;
+const MAX_DURATION = 30;
 const MAX_FRAMES = FPS * MAX_DURATION;
 
 /* ───────────────────── Palette ───────────────────── */

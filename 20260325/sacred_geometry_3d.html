@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sacred Geometry 3D</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+      color: #ccc;
+    }
+    canvas {
+      display: block;
+      width: min(100vw, calc(100vh * 1080 / 1920));
+      height: min(100vh, calc(100vw * 1920 / 1080));
+    }
+    #controls {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      background: rgba(5, 5, 12, 0.9);
+      padding: 14px 16px 12px;
+      border-radius: 12px;
+      z-index: 100;
+      border: 1px solid rgba(80, 100, 200, 0.15);
+      backdrop-filter: blur(14px);
+      min-width: 200px;
+    }
+    #controls strong {
+      color: #fff;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+    }
+    button {
+      background: rgba(15, 15, 40, 0.9);
+      color: #ccc;
+      border: 1px solid rgba(80, 100, 200, 0.2);
+      padding: 6px 14px;
+      margin: 8px 6px 0 0;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+      letter-spacing: 0.06em;
+    }
+    button:hover {
+      border-color: rgba(80, 100, 200, 0.5);
+      background: rgba(25, 25, 60, 0.9);
+    }
+    button:disabled {
+      color: #444;
+      cursor: not-allowed;
+      border-color: rgba(80, 100, 200, 0.05);
+    }
+    #status {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #84bae7;
+    }
+    #frameInfo {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      font-size: 11px;
+      color: rgba(150, 150, 180, 0.5);
+      z-index: 100;
+      font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div><strong>SACRED GEOMETRY 3D</strong></div>
+    <button id="startBtn" onclick="startRecording()">REC</button>
+    <button id="stopBtn" onclick="stopRecording()" disabled>STOP</button>
+    <div id="status">Ready</div>
+  </div>
+  <div id="frameInfo">0 / 1800</div>
+
+  <script>
+/* ─── Constants ─── */
+var W = 1080;
+var H = 1920;
+var FPS = 60;
+var MAX_DURATION = 30;
+var MAX_FRAMES = FPS * MAX_DURATION;
+var PHI = (1 + Math.sqrt(5)) / 2;
+var TAU = Math.PI * 2;
+
+/* ─── Color Palette ─── */
+var BG_DEEP   = [13, 31, 45];
+var BG_FOREST = [10, 61, 46];
+var BG_SLATE  = [41, 48, 57];
+var BG_MOSS   = [40, 54, 49];
+
+var MINT      = [0, 255, 135];
+var CYAN      = [0, 212, 255];
+var VIOLET    = [123, 47, 255];
+var MAGENTA   = [255, 45, 122];
+var PALE_MINT = [176, 255, 232];
+var PALE_CYAN = [196, 240, 255];
+
+/* All colors for particle cycling */
+var ALL_COLORS = [
+  MINT, CYAN, VIOLET, MAGENTA, PALE_MINT, PALE_CYAN,
+  BG_DEEP, BG_FOREST, BG_SLATE, BG_MOSS
+];
+
+var time = 0;
+var loopDuration = MAX_DURATION;
+var particles = [];
+var icosaVerts = [];
+var dodecaVerts = [];
+var dodecaEdges = [];
+var icosaEdges = [];
+
+/* ─── Recording State ─── */
+var isRecording = false;
+var recordingFrameCount = 0;
+var encoder = null;
+var muxer = null;
+
+/* ─── Helpers ─── */
+function lerpVal(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function easeInOut(t) {
+  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+/* Progress through 30s loop, 0..1 */
+function loopProgress() {
+  return (time % (loopDuration * FPS)) / (loopDuration * FPS);
+}
+
+/* Smooth phase that loops over duration, returns 0..TAU */
+function loopAngle(speed) {
+  return loopProgress() * TAU * speed;
+}
+
+/* ─── Particle Class ─── */
+function Particle(i, total) {
+  var goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  var theta = goldenAngle * i;
+  var phi2 = Math.acos(1 - 2 * (i + 0.5) / total);
+  this.baseR = 280 + Math.random() * 180;
+  this.theta = theta;
+  this.phi = phi2;
+  this.speed = 0.3 + Math.random() * 0.7;
+  this.size = 1.5 + Math.random() * 3;
+  this.col = ALL_COLORS[i % ALL_COLORS.length];
+  this.offset = Math.random() * TAU;
+}
+
+Particle.prototype.update = function(t) {
+  var angle = loopAngle(this.speed) + this.offset;
+  var breathe = 1 + 0.15 * Math.sin(loopAngle(0.5) + this.offset);
+  var r = this.baseR * breathe;
+  this.x = r * Math.sin(this.phi + angle * 0.3) * Math.cos(this.theta + angle);
+  this.y = r * Math.sin(this.phi + angle * 0.3) * Math.sin(this.theta + angle) * 0.6;
+  this.z = r * Math.cos(this.phi + angle * 0.3);
+};
+
+Particle.prototype.draw = function() {
+  var c = this.col;
+  var alpha = 120 + 80 * Math.sin(loopAngle(1) + this.offset);
+  push();
+  translate(this.x, this.y, this.z);
+  noStroke();
+  fill(c[0], c[1], c[2], alpha);
+  sphere(this.size);
+  pop();
+};
+
+/* ─── Icosahedron Vertices & Edges ─── */
+function buildIcosahedron(radius) {
+  var verts = [];
+  var t2 = (1 + Math.sqrt(5)) / 2;
+  var raw = [
+    [-1, t2, 0], [1, t2, 0], [-1, -t2, 0], [1, -t2, 0],
+    [0, -1, t2], [0, 1, t2], [0, -1, -t2], [0, 1, -t2],
+    [t2, 0, -1], [t2, 0, 1], [-t2, 0, -1], [-t2, 0, 1]
+  ];
+  for (var i = 0; i < raw.length; i++) {
+    var len = Math.sqrt(raw[i][0]*raw[i][0] + raw[i][1]*raw[i][1] + raw[i][2]*raw[i][2]);
+    verts.push([raw[i][0]/len*radius, raw[i][1]/len*radius, raw[i][2]/len*radius]);
+  }
+  var edges = [
+    [0,1],[0,5],[0,7],[0,10],[0,11],
+    [1,5],[1,7],[1,8],[1,9],
+    [2,3],[2,4],[2,6],[2,10],[2,11],
+    [3,4],[3,6],[3,8],[3,9],
+    [4,5],[4,9],[4,11],
+    [5,9],[5,11],
+    [6,7],[6,8],[6,10],
+    [7,8],[7,10],
+    [8,9],
+    [10,11]
+  ];
+  return { verts: verts, edges: edges };
+}
+
+/* ─── Dodecahedron Vertices & Edges ─── */
+function buildDodecahedron(radius) {
+  var p = PHI;
+  var ip = 1 / PHI;
+  var raw = [
+    [1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],
+    [-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1],
+    [0,ip,p],[0,ip,-p],[0,-ip,p],[0,-ip,-p],
+    [ip,p,0],[ip,-p,0],[-ip,p,0],[-ip,-p,0],
+    [p,0,ip],[p,0,-ip],[-p,0,ip],[-p,0,-ip]
+  ];
+  var verts = [];
+  for (var i = 0; i < raw.length; i++) {
+    var len = Math.sqrt(raw[i][0]*raw[i][0] + raw[i][1]*raw[i][1] + raw[i][2]*raw[i][2]);
+    verts.push([raw[i][0]/len*radius, raw[i][1]/len*radius, raw[i][2]/len*radius]);
+  }
+  /* connect vertices within distance threshold */
+  var edges = [];
+  var threshold = 2.0 * radius / Math.sqrt(3);
+  for (var a = 0; a < verts.length; a++) {
+    for (var b = a + 1; b < verts.length; b++) {
+      var dx = verts[a][0]-verts[b][0];
+      var dy = verts[a][1]-verts[b][1];
+      var dz = verts[a][2]-verts[b][2];
+      var d = Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if (d < threshold * 0.78) {
+        edges.push([a, b]);
+      }
+    }
+  }
+  return { verts: verts, edges: edges };
+}
+
+/* ─── Torus Knot ─── */
+function drawTorusKnot(p_val, q_val, R, r, numPoints, col1, col2) {
+  var phase = loopAngle(1);
+  var breathe = 1 + 0.08 * Math.sin(loopAngle(0.5));
+  var prog = loopProgress();
+  /* emergence: fade in during first 8 seconds */
+  var emerge = constrain(prog * loopDuration / 8, 0, 1);
+  emerge = easeInOut(emerge);
+
+  noStroke();
+  for (var i = 0; i < numPoints; i++) {
+    var t2 = (i / numPoints) * TAU;
+    var c = (i % 2 === 0) ? col1 : col2;
+    var cosQt = Math.cos(q_val * t2 + phase * 0.3);
+    var sinQt = Math.sin(q_val * t2 + phase * 0.3);
+    var cosPt = Math.cos(p_val * t2 + phase);
+    var sinPt = Math.sin(p_val * t2 + phase);
+    var xp = (R * breathe + r * cosQt) * cosPt;
+    var yp = (R * breathe + r * cosQt) * sinPt;
+    var zp = r * sinQt;
+    var sz = 2 + 2 * Math.sin(t2 * 3 + phase);
+    var alpha = emerge * (140 + 60 * Math.sin(t2 * 5 + phase));
+    push();
+    translate(xp, yp, zp);
+    ambientMaterial(c[0], c[1], c[2], alpha);
+    sphere(sz);
+    pop();
+  }
+}
+
+/* ─── Platonic Wireframe ─── */
+function drawPlatonicWireframe(verts, edges, rotX, rotY, rotZ, col, alphaBase) {
+  var c = col;
+  push();
+  rotateX(rotX);
+  rotateY(rotY);
+  rotateZ(rotZ);
+  stroke(c[0], c[1], c[2], alphaBase);
+  strokeWeight(1.2);
+  noFill();
+  for (var i = 0; i < edges.length; i++) {
+    var a = verts[edges[i][0]];
+    var b = verts[edges[i][1]];
+    beginShape(LINES);
+    vertex(a[0], a[1], a[2]);
+    vertex(b[0], b[1], b[2]);
+    endShape();
+  }
+  /* vertex dots */
+  noStroke();
+  for (var j = 0; j < verts.length; j++) {
+    push();
+    translate(verts[j][0], verts[j][1], verts[j][2]);
+    ambientMaterial(c[0], c[1], c[2], alphaBase + 40);
+    sphere(3);
+    pop();
+  }
+  pop();
+}
+
+/* ─── Fibonacci Sphere ─── */
+function drawFibonacciSphere(numPoints, radius, col, phase) {
+  var c = col;
+  var goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  var breathe = 1 + 0.12 * Math.sin(loopAngle(0.7) + phase);
+  var r2 = radius * breathe;
+  noStroke();
+  for (var i = 0; i < numPoints; i++) {
+    var theta = goldenAngle * i + loopAngle(0.2);
+    var phi2 = Math.acos(1 - 2 * (i + 0.5) / numPoints);
+    var x = r2 * Math.sin(phi2) * Math.cos(theta);
+    var y = r2 * Math.sin(phi2) * Math.sin(theta);
+    var z = r2 * Math.cos(phi2);
+    var sz = 1.5 + 1.5 * Math.sin(i * 0.1 + loopAngle(1));
+    var alpha = 80 + 60 * Math.sin(i * 0.2 + loopAngle(0.8));
+    push();
+    translate(x, y, z);
+    ambientMaterial(c[0], c[1], c[2], alpha);
+    sphere(sz);
+    pop();
+  }
+}
+
+/* ─── Lissajous 3D Curve ─── */
+function drawLissajous3D(a, b, c2, A, B, C, delta, numPoints, col) {
+  var phase = loopAngle(1);
+  var prog = loopProgress();
+  /* morph phase 20-28s */
+  var morphT = constrain((prog * loopDuration - 20) / 8, 0, 1);
+  morphT = easeInOut(morphT);
+  var morph = 1 + 0.3 * morphT * Math.sin(loopAngle(2));
+
+  stroke(col[0], col[1], col[2], 100);
+  strokeWeight(1.5);
+  noFill();
+  beginShape();
+  for (var i = 0; i < numPoints; i++) {
+    var t2 = (i / numPoints) * TAU;
+    var x = A * morph * Math.sin(a * t2 + delta + phase);
+    var y = B * morph * Math.sin(b * t2 + phase * 0.7);
+    var z = C * morph * Math.sin(c2 * t2 + phase * 0.4);
+    vertex(x, y, z);
+  }
+  endShape();
+
+  /* glowing nodes at key points */
+  noStroke();
+  for (var j = 0; j < numPoints; j += Math.floor(numPoints / 20)) {
+    var t3 = (j / numPoints) * TAU;
+    var xn = A * morph * Math.sin(a * t3 + delta + phase);
+    var yn = B * morph * Math.sin(b * t3 + phase * 0.7);
+    var zn = C * morph * Math.sin(c2 * t3 + phase * 0.4);
+    push();
+    translate(xn, yn, zn);
+    ambientMaterial(col[0], col[1], col[2], 180);
+    sphere(4);
+    pop();
+  }
+}
+
+/* ─── Rose Curve (3D) ─── */
+function drawRoseCurve3D(n, d, radius, zAmp, numPoints, col) {
+  var phase = loopAngle(0.8);
+  var k = n / d;
+
+  stroke(col[0], col[1], col[2], 90);
+  strokeWeight(1.2);
+  noFill();
+  beginShape();
+  for (var i = 0; i <= numPoints; i++) {
+    var theta = (i / numPoints) * TAU * d;
+    var r2 = radius * Math.cos(k * theta + phase * 0.5);
+    var x = r2 * Math.cos(theta + phase);
+    var y = r2 * Math.sin(theta + phase);
+    var z = zAmp * Math.sin(theta * 2 + phase * 1.3);
+    vertex(x, y, z);
+  }
+  endShape();
+
+  /* petal tip highlights */
+  noStroke();
+  var petalCount = (n % 2 === 0) ? 2 * n : n;
+  if (d > 1) petalCount = n;
+  for (var p2 = 0; p2 < petalCount; p2++) {
+    var tipTheta = (p2 / petalCount) * TAU * d / (2 * k);
+    var tipR = radius;
+    var tx = tipR * Math.cos(tipTheta + phase);
+    var ty = tipR * Math.sin(tipTheta + phase);
+    var tz = zAmp * Math.sin(tipTheta * 2 + phase * 1.3);
+    push();
+    translate(tx, ty, tz);
+    ambientMaterial(col[0], col[1], col[2], 160);
+    sphere(5);
+    pop();
+  }
+}
+
+/* ─── Flower of Life (ring of circles rendered as point rings) ─── */
+function drawFlowerOfLife(radius, col) {
+  var phase = loopAngle(0.4);
+  var breathe = 1 + 0.06 * Math.sin(loopAngle(0.3));
+  var r2 = radius * breathe;
+
+  stroke(col[0], col[1], col[2], 60);
+  strokeWeight(0.8);
+  noFill();
+
+  /* center circle + 6 surrounding */
+  var centers = [[0, 0]];
+  for (var i = 0; i < 6; i++) {
+    var ang = i * TAU / 6 + phase;
+    centers.push([r2 * Math.cos(ang), r2 * Math.sin(ang)]);
+  }
+  /* second ring (12) */
+  for (var j = 0; j < 6; j++) {
+    var ang1 = j * TAU / 6 + phase;
+    var ang2 = (j + 1) * TAU / 6 + phase;
+    centers.push([2 * r2 * Math.cos(ang1), 2 * r2 * Math.sin(ang1)]);
+    var mx = r2 * (Math.cos(ang1) + Math.cos(ang2));
+    var my = r2 * (Math.sin(ang1) + Math.sin(ang2));
+    centers.push([mx, my]);
+  }
+
+  for (var ci = 0; ci < centers.length; ci++) {
+    push();
+    translate(centers[ci][0], centers[ci][1], 0);
+    beginShape();
+    for (var k = 0; k <= 48; k++) {
+      var a2 = (k / 48) * TAU;
+      vertex(r2 * Math.cos(a2), r2 * Math.sin(a2), 0);
+    }
+    endShape(CLOSE);
+    pop();
+  }
+}
+
+/* ─── Setup ─── */
+function setup() {
+  createCanvas(W, H, WEBGL);
+  pixelDensity(1);
+  frameRate(FPS);
+
+  /* build platonic solids */
+  var ico = buildIcosahedron(200);
+  icosaVerts = ico.verts;
+  icosaEdges = ico.edges;
+
+  var dod = buildDodecahedron(160);
+  dodecaVerts = dod.verts;
+  dodecaEdges = dod.edges;
+
+  /* particles */
+  for (var j = 0; j < 350; j++) {
+    particles.push(new Particle(j, 350));
+  }
+}
+
+/* ─── Draw ─── */
+function draw() {
+  background(BG_DEEP[0], BG_DEEP[1], BG_DEEP[2]);
+
+  var prog = loopProgress();
+  var sec = prog * loopDuration;
+
+  /* ── Camera: slow orbit ── */
+  var camAngle = loopAngle(1);
+  var camR = 900 + 200 * Math.sin(loopAngle(0.5));
+  /* pull-back emergence 0-8s */
+  var emergeT = constrain(sec / 8, 0, 1);
+  emergeT = easeInOut(emergeT);
+  camR = lerpVal(500, camR, emergeT);
+  var camX = camR * Math.sin(camAngle) * 0.6;
+  var camY = -150 + 100 * Math.sin(loopAngle(0.7));
+  var camZ = camR * Math.cos(camAngle) * 0.6;
+  camera(camX, camY, camZ, 0, 0, 0, 0, 1, 0);
+
+  /* ── Lighting ── */
+  ambientLight(20, 30, 35);
+  pointLight(CYAN[0], CYAN[1], CYAN[2], 400, -300, 300);
+  pointLight(VIOLET[0], VIOLET[1], VIOLET[2], -400, 200, -200);
+  pointLight(MAGENTA[0], MAGENTA[1], MAGENTA[2], 0, -400, 400);
+  pointLight(MINT[0], MINT[1], MINT[2], 300, 300, -300);
+
+  /* ── 1. Torus Knot (p=3, q=5) — MINT + VIOLET ── */
+  push();
+  rotateX(loopAngle(0.15));
+  rotateZ(loopAngle(0.1));
+  drawTorusKnot(3, 5, 220, 80, 400, MINT, VIOLET);
+  pop();
+
+  /* ── 2. Inner Torus Knot (p=5, q=8) — CYAN + MAGENTA ── */
+  push();
+  rotateY(loopAngle(0.12));
+  rotateX(PI * 0.3);
+  drawTorusKnot(5, 8, 120, 45, 300, CYAN, MAGENTA);
+  pop();
+
+  /* ── 3. Icosahedron wireframe — PALE_MINT ── */
+  var icoRot = loopAngle(0.2);
+  drawPlatonicWireframe(icosaVerts, icosaEdges, icoRot, icoRot * 0.7, icoRot * 0.3, PALE_MINT, 90 * emergeT);
+
+  /* ── 4. Dodecahedron wireframe — PALE_CYAN ── */
+  var dodRot = -loopAngle(0.25);
+  drawPlatonicWireframe(dodecaVerts, dodecaEdges, dodRot * 0.5, dodRot, dodRot * 0.8, PALE_CYAN, 70 * emergeT);
+
+  /* ── 5. Fibonacci Sphere — BG_FOREST ── */
+  push();
+  rotateY(loopAngle(0.08));
+  drawFibonacciSphere(200, 350, BG_FOREST, 0);
+  pop();
+
+  /* ── 6. Lissajous 3D (3:4:5) — CYAN ── */
+  push();
+  rotateX(loopAngle(0.05));
+  rotateZ(PI * 0.15);
+  drawLissajous3D(3, 4, 5, 250, 300, 200, PI / 4, 600, CYAN);
+  pop();
+
+  /* ── 7. Rose Curve (n=5, d=3) — MAGENTA ── */
+  push();
+  translate(0, 80, 0);
+  rotateX(PI * 0.4 + loopAngle(0.06));
+  rotateY(loopAngle(0.09));
+  drawRoseCurve3D(5, 3, 280, 60, 800, MAGENTA);
+  pop();
+
+  /* ── 8. Flower of Life — BG_MOSS ── */
+  push();
+  translate(0, -50, -100);
+  rotateX(PI * 0.35 + loopAngle(0.04) * 0.2);
+  rotateZ(loopAngle(0.06));
+  drawFlowerOfLife(70, BG_MOSS);
+  pop();
+
+  /* ── 9. Particles ── */
+  for (var i = 0; i < particles.length; i++) {
+    particles[i].update(time);
+    particles[i].draw();
+  }
+
+  /* ── Recording ── */
+  if (isRecording) {
+    captureFrame();
+    recordingFrameCount++;
+    document.getElementById('frameInfo').textContent = recordingFrameCount + ' / ' + MAX_FRAMES;
+    if (recordingFrameCount >= MAX_FRAMES) {
+      stopRecording();
+    }
+  } else {
+    document.getElementById('frameInfo').textContent = Math.floor(time) + ' f';
+  }
+
+  time++;
+}
+
+/* ─── Recording System ─── */
+async function startRecording() {
+  if (typeof VideoEncoder === 'undefined') {
+    alert('Your browser does not support WebCodecs API. Please use Chrome or Edge.');
+    return;
+  }
+  isRecording = true;
+  recordingFrameCount = 0;
+  time = 0;
+
+  muxer = new Mp4Muxer.Muxer({
+    target: new Mp4Muxer.ArrayBufferTarget(),
+    video: { codec: 'avc', width: W, height: H },
+    fastStart: 'in-memory'
+  });
+
+  encoder = new VideoEncoder({
+    output: function(chunk, meta) { muxer.addVideoChunk(chunk, meta); },
+    error: function(e) { console.error(e); }
+  });
+
+  encoder.configure({
+    codec: 'avc1.640028',
+    width: W,
+    height: H,
+    bitrate: 10000000,
+    framerate: FPS
+  });
+
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  document.getElementById('status').textContent = 'Recording';
+  document.getElementById('status').style.color = '#ff6b6b';
+}
+
+async function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  document.getElementById('status').textContent = 'Processing';
+  document.getElementById('status').style.color = '#84bae7';
+
+  await encoder.flush();
+  muxer.finalize();
+
+  var buffer = muxer.target.buffer;
+  var blob = new Blob([buffer], { type: 'video/mp4' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'sacred_geometry_3d.mp4';
+  a.click();
+  URL.revokeObjectURL(url);
+  encoder = null;
+  muxer = null;
+
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  document.getElementById('status').textContent = 'Done';
+  document.getElementById('status').style.color = '#916ccc';
+  setTimeout(function() {
+    document.getElementById('status').textContent = 'Ready';
+    document.getElementById('status').style.color = '#84bae7';
+  }, 3000);
+}
+
+function captureFrame() {
+  if (!isRecording || !encoder) return;
+  var canvas = document.querySelector('canvas');
+  var timestamp = recordingFrameCount * (1000000 / FPS);
+  var frame = new VideoFrame(canvas, { timestamp: timestamp });
+  encoder.encode(frame, { keyFrame: recordingFrameCount % 60 === 0 });
+  frame.close();
+}
+
+/* ─── Keyboard shortcut ─── */
+function keyPressed() {
+  if (key === 'r' || key === 'R') {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }
+}
+  </script>
+</body>
+</html>
