@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Living Mirror &middot; Webcam Generative Art</title>
+  <script src="../p5.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+    }
+    canvas { display: block; cursor: crosshair; }
+
+    #overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      backdrop-filter: blur(12px);
+      transition: opacity 0.5s ease;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    #startScreen {
+      text-align: center;
+      color: #fff;
+    }
+    #startScreen h1 {
+      font-size: 36px;
+      font-weight: 300;
+      letter-spacing: 0.2em;
+      margin-bottom: 12px;
+    }
+    #startScreen p {
+      color: #777;
+      font-size: 13px;
+      line-height: 1.8;
+      margin-bottom: 28px;
+    }
+    #startBtn {
+      background: linear-gradient(135deg, #ff6b6b, #ffa07a);
+      color: #000;
+      border: none;
+      padding: 14px 40px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      cursor: pointer;
+      font-family: inherit;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    #startBtn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 8px 30px rgba(255,107,107,0.4);
+    }
+
+    #hud {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      z-index: 100;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+    #hud.visible { opacity: 1; }
+    .hud-pill {
+      background: rgba(0,0,0,0.7);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #aaa;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-family: inherit;
+      letter-spacing: 0.06em;
+      backdrop-filter: blur(10px);
+    }
+    .hud-pill kbd {
+      color: #fff;
+      background: rgba(255,255,255,0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      margin-right: 4px;
+    }
+
+    #modeLabel {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      font-size: 13px;
+      letter-spacing: 0.2em;
+      font-weight: 300;
+      z-index: 100;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      pointer-events: none;
+      text-shadow: 0 2px 20px rgba(0,0,0,0.8);
+    }
+    #modeLabel.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <div id="overlay">
+    <div id="startScreen">
+      <h1>LIVING MIRROR</h1>
+      <p>
+        Interactive webcam generative art<br>
+        Move your body to paint with light<br>
+        Your camera feed stays local &mdash; nothing is uploaded
+      </p>
+      <button id="startBtn" onclick="beginExperience()">ENABLE CAMERA</button>
+    </div>
+  </div>
+
+  <div id="modeLabel"></div>
+
+  <div id="hud">
+    <span class="hud-pill"><kbd>1-0</kbd> 10 Modes</span>
+    <span class="hud-pill"><kbd>C</kbd> Clear</span>
+    <span class="hud-pill"><kbd>M</kbd> Mirror</span>
+    <span class="hud-pill"><kbd>Space</kbd> Pause</span>
+    <span class="hud-pill"><kbd>Mouse</kbd> Interact</span>
+  </div>
+
+  <script src="sketch.js"></script>
+</body>
+</html>
