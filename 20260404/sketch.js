@@ -38,6 +38,50 @@ let rainInitialized = false;
 // ASCII character ramp — sparse to dense
 const ASCII_RAMP = ' .\'`^",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$';
 
+// ─── Neon Palette ────────────────────────────────────────
+// Dark tones (backgrounds / dim characters)
+const PAL_DARK   = [[0x29,0x30,0x39],[0x28,0x36,0x31],[0x0d,0x1f,0x2d],[0x0a,0x3d,0x2e]];
+// Neon accents (active / mid-brightness)
+const PAL_NEON   = [[0x00,0xff,0x87],[0x00,0xd4,0xff],[0x7b,0x2f,0xff],[0xff,0x2d,0x7a]];
+// Highlights (brightest)
+const PAL_LIGHT  = [[0xb0,0xff,0xe8],[0xc4,0xf0,0xff]];
+
+// Map brightness (0-255) to palette color with smooth interpolation
+// Uses only Math.* to avoid p5 global-mode edge cases
+function getPaletteColor(bright, t) {
+  const b = (typeof bright === 'number' && isFinite(bright)) ? bright : 0;
+  const nf = Math.max(0, Math.min(b, 255)) / 255;
+  const ts = (typeof t === 'number' && isFinite(t)) ? Math.abs(t) : 0;
+
+  if (nf < 0.3) {
+    const idx = Math.floor(ts * 1.7) % PAL_DARK.length;
+    const d = PAL_DARK[idx] || PAL_DARK[0];
+    const f = nf / 0.3;
+    return [d[0] * f, d[1] * f, d[2] * f];
+  }
+
+  if (nf < 0.75) {
+    const f = (nf - 0.3) / 0.45;
+    const idx = Math.floor(ts * 2.3) % PAL_NEON.length;
+    const idx2 = (idx + 1) % PAL_NEON.length;
+    const a = PAL_NEON[idx] || PAL_NEON[0];
+    const bCol = PAL_NEON[idx2] || PAL_NEON[0];
+    return [
+      a[0] + (bCol[0] - a[0]) * f,
+      a[1] + (bCol[1] - a[1]) * f,
+      a[2] + (bCol[2] - a[2]) * f
+    ];
+  }
+
+  // Highlight zone
+  const f = (nf - 0.75) / 0.25;
+  const lIdx = Math.floor(ts * 1.1) % PAL_LIGHT.length;
+  const nIdx = Math.floor(ts * 2.3) % PAL_NEON.length;
+  const n = PAL_NEON[nIdx] || PAL_NEON[0];
+  const l = PAL_LIGHT[lIdx] || PAL_LIGHT[0];
+  return [n[0] + (l[0] - n[0]) * f, n[1] + (l[1] - n[1]) * f, n[2] + (l[2] - n[2]) * f];
+}
+
 const MODE_NAMES = [
   '',
   'PARTICLE FLOW',
@@ -339,17 +383,19 @@ function drawAscii(motionPoints) {
   const rows = floor(H / fontSize);
   const fisheyeRadius = 150;
   const fisheyeRadiusSq = fisheyeRadius * fisheyeRadius;
+  const t = frameCount * 0.015;
 
-  // Build a motion lookup set for mode 7
-  const motionSet = new Set();
+  // Build a motion lookup map for mode 7 (stores intensity)
+  const motionMap = new Map();
   if (mode === 7) {
     for (const mp of motionPoints) {
       const gc = floor(map(mp.x, 0, CAM_W, 0, cols));
       const gr = floor(map(mp.y, 0, CAM_H, 0, rows));
-      // Also mark neighbors for a thicker glow
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
-          motionSet.add((gr + dy) * cols + (gc + dx));
+          const key = (gr + dy) * cols + (gc + dx);
+          const prev = motionMap.get(key) || 0;
+          motionMap.set(key, max(prev, mp.intensity));
         }
       }
     }
@@ -377,6 +423,9 @@ function drawAscii(motionPoints) {
       const sx = col * charW;
       const sy = row * fontSize;
 
+      // Palette seed varies by position + time for shimmer
+      const palSeed = col * 0.07 + row * 0.05 + t;
+
       // Mouse fisheye — only compute sqrt when within bounding box
       const dx = mouseX - sx;
       const dy = mouseY - sy;
@@ -384,25 +433,44 @@ function drawAscii(motionPoints) {
 
       if (dSq < fisheyeRadiusSq) {
         const mouseDist = sqrt(dSq);
-        const scale = map(mouseDist, 0, fisheyeRadius, 1.8, 1.0);
+        const scale = map(mouseDist, 0, fisheyeRadius, 2.0, 1.0);
         textSize(fontSize * scale);
 
-        if (mode === 7 && motionSet.has(row * cols + col)) {
-          fill(r, g, b, 255);
+        if (mode === 7 && motionMap.has(row * cols + col)) {
+          // Motion area near mouse — bright neon flash
+          const nIdx = floor((frameCount * 0.05 + col * 0.1) % 4);
+          const n = PAL_NEON[nIdx];
+          const f = map(mouseDist, 0, fisheyeRadius, 1, 0.6);
+          fill(n[0] * f, n[1] * f, n[2] * f, 255);
         } else if (mode === 7) {
-          fill(0, 255, 100, 200);
+          // Static area near mouse — soft neon glow
+          const c = getPaletteColor(bright * 1.3, palSeed);
+          fill(c[0], c[1], c[2], 230);
         } else {
-          fill(bright + 60, bright + 80, bright + 60, 255);
+          // Mode 6 fisheye — neon palette with extra brightness
+          const c = getPaletteColor(min(255, bright + 60), palSeed);
+          fill(c[0], c[1], c[2], 255);
         }
         text(ch, sx, sy);
         textSize(fontSize);
       } else {
-        if (mode === 7 && motionSet.has(row * cols + col)) {
-          fill(r, g, b, 255);
+        if (mode === 7 && motionMap.has(row * cols + col)) {
+          // Motion area — cycling neon colors
+          const intensity = motionMap.get(row * cols + col);
+          const nIdx = floor((t * 4 + col * 0.08 + row * 0.06) % 4);
+          const n = PAL_NEON[nIdx];
+          const f = map(intensity, MOTION_THRESHOLD, 765, 0.5, 1.0);
+          fill(n[0] * f, n[1] * f, n[2] * f, 240);
         } else if (mode === 7) {
-          fill(0, bright * 0.6, 0, 180);
+          // Static area — dark palette tones
+          const dIdx = floor((col * 0.03 + row * 0.05) % PAL_DARK.length);
+          const d = PAL_DARK[dIdx];
+          const f = bright / 255;
+          fill(d[0] * f * 1.5, d[1] * f * 1.5, d[2] * f * 1.5, 180);
         } else {
-          fill(bright, bright, bright, 220);
+          // Mode 6 — full palette coloring
+          const c = getPaletteColor(bright, palSeed);
+          fill(c[0], c[1], c[2], 220);
         }
         text(ch, sx, sy);
       }
@@ -412,6 +480,7 @@ function drawAscii(motionPoints) {
 
 // ─── ASCII Wave Mode (8) ─────────────────────────────────
 // Characters undulate like an ocean surface. Mouse = wave epicenter.
+// Neon palette waves with depth layering.
 function drawAsciiWave() {
   const fontSize = 14;
   const charW = fontSize * 0.6;
@@ -423,8 +492,6 @@ function drawAsciiWave() {
   const waveCX = mouseX / W;
   const waveCY = mouseY / H;
 
-  push();
-  colorMode(HSB, 360, 100, 100, 255);
   textFont('monospace');
   textAlign(LEFT, TOP);
   noStroke();
@@ -452,19 +519,32 @@ function drawAsciiWave() {
       const offsetX = wave1 + wave3 * 0.5;
       const offsetY = wave2 + wave3;
 
-      const hueShift = (wave1 + wave2) * 3.08; // map(-13..13 -> -40..40)
-      const hue = ((bright * 0.392 + 200) + hueShift + 360) % 360; // 200-300 range
-      fill(hue, 70, bright * 0.314 + 20, 230);
+      // Wave-driven neon coloring
+      const waveEnergy = (wave1 + wave3) / 20 + 0.5; // 0-1 normalized
+      const palSeed = nx * 3 + ny * 2 + t * 0.3 + waveEnergy * 2;
+
+      // Blend palette color with wave energy boosting brightness
+      const boosted = min(255, bright + waveEnergy * 80);
+      const c = getPaletteColor(boosted, palSeed);
+
+      // Wave peaks get extra glow — blend toward highlight colors
+      if (waveEnergy > 0.7) {
+        const glowF = (waveEnergy - 0.7) / 0.3;
+        const lIdx = floor(palSeed) % PAL_LIGHT.length;
+        const l = PAL_LIGHT[lIdx];
+        fill(lerp(c[0], l[0], glowF * 0.6), lerp(c[1], l[1], glowF * 0.6), lerp(c[2], l[2], glowF * 0.6), 240);
+      } else {
+        fill(c[0], c[1], c[2], 220);
+      }
 
       textSize(fontSize + abs(wave3) * 0.3);
       text(ASCII_RAMP[charIdx], col * charW + offsetX, row * fontSize + offsetY);
     }
   }
-  pop();
 }
 
-// ─── ASCII Rain Mode (9) — Matrix Digital Rain ──────────
-// Falling columns revealing your webcam face in code.
+// ─── ASCII Rain Mode (9) — Neon Digital Rain ────────────
+// Multi-color neon rain columns revealing your webcam face.
 function drawAsciiRain() {
   const fontSize = 16;
   const charW = fontSize * 0.6;
@@ -472,14 +552,15 @@ function drawAsciiRain() {
   const rows = floor(H / fontSize);
   const rampLen = ASCII_RAMP.length - 1;
 
-  // Initialize rain drops
+  // Initialize rain drops — each column gets a neon color index
   if (!rainInitialized || rainDrops.length !== cols) {
     rainDrops = [];
     for (let c = 0; c < cols; c++) {
       rainDrops.push({
         y: random(-rows, 0),
         speed: random(0.3, 1.2),
-        length: floor(random(8, 25))
+        length: floor(random(8, 25)),
+        colorIdx: floor(random(4))  // which PAL_NEON color
       });
     }
     rainInitialized = true;
@@ -490,7 +571,7 @@ function drawAsciiRain() {
   textAlign(LEFT, TOP);
   noStroke();
 
-  // Dim webcam background — draw every other cell for speed
+  // Dim webcam background — dark palette tint instead of pure green
   for (let row = 0; row < rows; row += 2) {
     const cy = floor(row * CAM_H / rows);
     for (let col = 0; col < cols; col += 2) {
@@ -498,7 +579,10 @@ function drawAsciiRain() {
       const idx = (cy * CAM_W + cx) * 4;
       const bright = cam.pixels[idx] * 0.299 + cam.pixels[idx + 1] * 0.587 + cam.pixels[idx + 2] * 0.114;
       const charIdx = floor(bright * rampLen / 255);
-      fill(0, bright * 0.15, 0, 80);
+      const dIdx = (col + row) % PAL_DARK.length;
+      const d = PAL_DARK[dIdx];
+      const f = bright / 255 * 0.3;
+      fill(d[0] * f, d[1] * f, d[2] * f, 90);
       text(ASCII_RAMP[charIdx], col * charW, row * fontSize);
     }
   }
@@ -512,12 +596,14 @@ function drawAsciiRain() {
       drop.y = random(-15, -2);
       drop.speed = random(0.3, 1.2);
       drop.length = floor(random(8, 25));
+      drop.colorIdx = floor(random(4));  // re-roll color on reset
     }
 
     const cx = floor(c * CAM_W / cols);
+    const neonCol = PAL_NEON[drop.colorIdx];
 
-    for (let t = 0; t < drop.length; t++) {
-      const row = floor(drop.y) - t;
+    for (let ti = 0; ti < drop.length; ti++) {
+      const row = floor(drop.y) - ti;
       if (row < 0 || row >= rows) continue;
 
       const cy = floor(row * CAM_H / rows);
@@ -528,20 +614,29 @@ function drawAsciiRain() {
       const bright = r * 0.299 + g * 0.587 + b * 0.114;
       const charIdx = floor(bright * rampLen / 255);
 
-      if (t === 0) {
-        fill(180, 255, 180, 255);
+      if (ti === 0) {
+        // Head of rain — use highlight colors (bright white-ish neon)
+        const lIdx = drop.colorIdx % PAL_LIGHT.length;
+        const l = PAL_LIGHT[lIdx];
+        fill(l[0], l[1], l[2], 255);
         textSize(fontSize + 2);
       } else {
-        const fade = 1 - t / drop.length;
-        fill(lerp(0, r, fade * 0.5), lerp(bright * 0.3, g, fade), lerp(0, b, fade * 0.3), 200 * fade + 55);
+        // Trail — fade from neon to dark, blended with webcam
+        const fade = 1 - ti / drop.length;
+        fill(
+          lerp(neonCol[0] * 0.15, lerp(neonCol[0], r, 0.4), fade),
+          lerp(neonCol[1] * 0.15, lerp(neonCol[1], g, 0.4), fade),
+          lerp(neonCol[2] * 0.15, lerp(neonCol[2], b, 0.4), fade),
+          200 * fade + 55
+        );
         textSize(fontSize);
       }
       text(ASCII_RAMP[charIdx], c * charW, row * fontSize);
     }
   }
 
-  // Mouse spotlight — only check bounding box around mouse
-  const spotRadius = 120;
+  // Mouse spotlight — reveals webcam in full neon palette
+  const spotRadius = 140;
   const colMin = max(0, floor((mouseX - spotRadius) / charW));
   const colMax = min(cols - 1, ceil((mouseX + spotRadius) / charW));
   const rowMin = max(0, floor((mouseY - spotRadius) / fontSize));
@@ -566,7 +661,10 @@ function drawAsciiRain() {
         const bright = r * 0.299 + g * 0.587 + b * 0.114;
         const charIdx = floor(bright * rampLen / 255);
         const d = sqrt(dSq);
-        fill(r, g, b, map(d, 0, spotRadius, 255, 0));
+        const palSeed = col * 0.05 + row * 0.03 + frameCount * 0.02;
+        const c = getPaletteColor(bright, palSeed);
+        const a = map(d, 0, spotRadius, 255, 0);
+        fill(c[0], c[1], c[2], a);
         text(ASCII_RAMP[charIdx], sx, sy);
       }
     }
@@ -574,7 +672,7 @@ function drawAsciiRain() {
 }
 
 // ─── ASCII Vortex Mode (10) ─────────────────────────────
-// Characters spiral around mouse. Whirlpool / black hole.
+// Characters spiral around mouse with neon palette coloring.
 function drawAsciiVortex() {
   const fontSize = 14;
   const charW = fontSize * 0.6;
@@ -587,10 +685,7 @@ function drawAsciiVortex() {
   const centerY = mouseY;
   const maxRadius = sqrt(W * W + H * H) * 0.5;
   const invMaxRadius = 1 / maxRadius;
-  const fc2 = frameCount * 2;
 
-  push();
-  colorMode(HSB, 360, 100, 100, 255);
   textFont('monospace');
   textAlign(CENTER, CENTER);
   noStroke();
@@ -622,9 +717,31 @@ function drawAsciiVortex() {
       const i = (cy * CAM_W + cx) * 4;
       const bright = cam.pixels[i] * 0.299 + cam.pixels[i + 1] * 0.587 + cam.pixels[i + 2] * 0.114;
 
-      const hue = (d * invMaxRadius * 360 + fc2) % 360;
-      const sat = d < 200 ? 90 - d * 0.3 : 30;
-      fill(hue, sat, bright * 0.333 + 15, 240);
+      // Spiral arm coloring — distance + angle determines neon color
+      const angle = atan2(dy, dx);
+      const spiralPhase = (angle + d * 0.015 + t * 2) / TAU;
+      const nIdx = floor(((spiralPhase % 1 + 1) % 1) * 4) % 4;
+      const neon = PAL_NEON[nIdx];
+
+      const nf = d * invMaxRadius; // 0 at center, 1 at edge
+
+      if (d < 180) {
+        // Inner vortex — bright neon blended with webcam brightness
+        const f = bright / 255;
+        const innerBlend = 1 - d / 180;
+        // Near core: pure neon. Further out: blend with dark
+        fill(
+          neon[0] * f * (0.5 + innerBlend * 0.5),
+          neon[1] * f * (0.5 + innerBlend * 0.5),
+          neon[2] * f * (0.5 + innerBlend * 0.5),
+          240
+        );
+      } else {
+        // Outer region — palette-based coloring
+        const palSeed = spiralPhase * 4 + t * 0.5;
+        const c = getPaletteColor(bright, palSeed);
+        fill(c[0], c[1], c[2], map(nf, 0.15, 1, 240, 160));
+      }
 
       const sz = d < 200 ? fontSize + (1 - d / 200) * 8 : fontSize;
       textSize(sz);
@@ -632,14 +749,17 @@ function drawAsciiVortex() {
     }
   }
 
-  // Bright core
-  const coreHue = (frameCount * 3) % 360;
+  // Hot pink core with layered glow
   noStroke();
-  fill(coreHue, 50, 100, 40);
+  // Outer glow — purple
+  fill(0x7b, 0x2f, 0xff, 25);
+  ellipse(centerX, centerY, 60, 60);
+  // Mid glow — hot pink
+  fill(0xff, 0x2d, 0x7a, 40);
   ellipse(centerX, centerY, 30, 30);
-  fill(coreHue, 20, 100, 80);
+  // Bright core — mint highlight
+  fill(0xb0, 0xff, 0xe8, 120);
   ellipse(centerX, centerY, 8, 8);
-  pop();
 }
 
 // ─── Info Overlay ────────────────────────────────────────
