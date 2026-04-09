@@ -6,18 +6,18 @@ const FPS = 60;
 const MAX_DURATION = 24;
 const MAX_FRAMES = FPS * MAX_DURATION;
 
-const LOOP_SECONDS = 16;
+const LOOP_SECONDS = 20;
 const LOOP_FRAMES = FPS * LOOP_SECONDS;
 
-// Grid dimensions
-const COLS = 9;
-const ROWS = 16;
-const LAYERS = 5;
+// Ring field
+const RING_COUNT = 80;
+const TRAIL_ALPHA = 22;   // higher = shorter trail, cleaner shapes
 
 const PAPER_DOTS = 14000;
 const PAPER_FIBERS = 140;
 
-let cells = [];
+let rings = [];
+let trailLayer = null;
 let paperLayer = null;
 
 let motionSeed = 0;
@@ -41,11 +41,17 @@ function setup() {
   noFill();
   strokeCap(ROUND);
 
+  // Trail buffer — drawn in 2D, composited each frame
+  trailLayer = createGraphics(W, H);
+  trailLayer.pixelDensity(1);
+  trailLayer.colorMode(RGB, 255, 255, 255, 255);
+  trailLayer.background(0);
+
   paperLayer = createGraphics(W, H);
   paperLayer.pixelDensity(1);
   paperLayer.colorMode(RGB, 255, 255, 255, 255);
 
-  buildCells();
+  buildRings();
   reseedPattern(floor(random(100000)));
 
   const maxEl = document.getElementById('maxDuration');
@@ -53,22 +59,15 @@ function setup() {
   updateCanvasInfo();
 }
 
-function buildCells() {
-  cells = [];
-  for (let iz = 0; iz < LAYERS; iz++) {
-    for (let iy = 0; iy < ROWS; iy++) {
-      for (let ix = 0; ix < COLS; ix++) {
-        const nx = ix / (COLS - 1);
-        const ny = iy / (ROWS - 1);
-        const nz = iz / (LAYERS - 1);
-        cells.push({
-          baseX: (nx - 0.5) * W * 0.72,
-          baseY: (ny - 0.5) * H * 0.82,
-          baseZ: (nz - 0.5) * 320,
-          nx, ny, nz,
-        });
-      }
-    }
+function buildRings() {
+  rings = [];
+  for (let i = 0; i < RING_COUNT; i++) {
+    const t = i / RING_COUNT;
+    rings.push({
+      t,                              // normalized index 0..1
+      seed: i * 137.508,             // golden-angle phase offset
+      r: 0, theta: 0, phi2: 0,       // spherical-ish coords, animated each frame
+    });
   }
 }
 
@@ -82,6 +81,12 @@ function reseedPattern(seed) {
   phaseD = random(TWO_PI);
   phaseE = random(TWO_PI);
   phaseF = random(TWO_PI);
+
+  // Reset trail to black
+  if (trailLayer) {
+    trailLayer.background(0);
+  }
+
   renderPaperTexture();
 }
 
@@ -89,55 +94,38 @@ function reseedPattern(seed) {
 
 function draw() {
   const loop = (frameCount % LOOP_FRAMES) / LOOP_FRAMES;
-  const loopAngle = loop * TWO_PI;
+  const la = loop * TWO_PI; // loopAngle
 
-  background(255);
+  // --- Fade trail layer (motion blur) ---
+  trailLayer.noStroke();
+  trailLayer.fill(0, TRAIL_ALPHA);
+  trailLayer.rect(0, 0, W, H);
 
-  // Slow global camera tilt
-  rotateX(cos(loopAngle * 0.35 + phaseB) * 0.18);
-  rotateY(sin(loopAngle * 0.5 + phaseA) * 0.28);
-  rotateZ(sin(loopAngle * 0.22 + phaseC) * 0.04);
-
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i];
-
-    // Per-cell Perlin noise displacement
-    const noiseT = loop + c.nx * 1.1 + c.ny * 0.8 + c.nz * 0.6;
-    const dx = noise(c.nx * 2.2, noiseT + phaseD) * 2 - 1;
-    const dy = noise(c.ny * 2.4, noiseT + phaseE + 10) * 2 - 1;
-    const dz = noise(c.nz * 3.1, noiseT + phaseF + 20) * 2 - 1;
-    const dispScale = W * 0.04 + W * 0.07 * (sin(loopAngle * 0.5 + phaseA + c.nx * PI) * 0.5 + 0.5);
-
-    const px = c.baseX + dx * dispScale;
-    const py = c.baseY + dy * dispScale * 1.5;
-    const pz = c.baseZ + dz * 140;
-
-    // Size pulses with noise
-    const sizePulse = noise(c.nx * 3, c.ny * 3, loopAngle * 0.3 + phaseB);
-    const cellSize = W * 0.055 * (0.3 + sizePulse * 1.4);
-
-    // Alpha fades by depth
-    const depthAlpha = map(c.nz, 0, 1, 220, 40);
-    const pulseAlpha = depthAlpha * (0.5 + 0.5 * sin(loopAngle * 1.2 + c.nx * 2.3 + c.ny * 1.8 + phaseC));
-
-    if (pulseAlpha < 4) continue;
-
-    push();
-    translate(px, py, pz);
-
-    const localRot = loopAngle + c.nx * 2.8 + c.ny * 1.6 + phaseD;
-    rotateX(localRot * 0.31);
-    rotateY(localRot * 0.47);
-    rotateZ(localRot * 0.19);
-
-    drawCell(cellSize, pulseAlpha, c, loopAngle);
-    pop();
+  // --- Draw each ring onto trail layer ---
+  for (let i = 0; i < RING_COUNT; i++) {
+    drawRingToTrail(rings[i], la);
   }
 
-  // Paper overlay (WEBGL origin is center, shift to top-left)
+  // Global attractor — small bright dot
+  const attrX = W * 0.5 + sin(la * 0.37 + phaseE) * W * 0.18;
+  const attrY = H * 0.5 + cos(la * 0.29 + phaseF) * H * 0.22;
+  const attrPulse = 0.7 + 0.3 * sin(la * 2.3 + phaseA);
+  trailLayer.noStroke();
+  trailLayer.fill(255, 200 * attrPulse);
+  trailLayer.circle(attrX, attrY, 7 * attrPulse);
+  trailLayer.noFill();
+
+  // --- Composite to WEBGL canvas ---
+  background(0);
   push();
   translate(-W / 2, -H / 2, 0);
-  tint(255, 70);
+  image(trailLayer, 0, 0);
+  pop();
+
+  // --- Paper grain overlay ---
+  push();
+  translate(-W / 2, -H / 2, 0);
+  tint(255, 55);
   image(paperLayer, 0, 0);
   noTint();
   pop();
@@ -150,57 +138,95 @@ function draw() {
   }
 }
 
-// ─── Cell variants ────────────────────────────────────────────────────────────
+// ─── Ring drawing ─────────────────────────────────────────────────────────────
+// Each "ring" is a 3D orbital ellipse — projected manually to 2D on the trail layer.
+// We rotate the ring's plane with noise-animated Euler angles, then project each
+// sample point using a simple perspective divide.
 
-function drawCell(sz, alpha, c, loopAngle) {
-  const h = sz * 0.5;
-  const variant = ((c.nx * 7 + c.ny * 13 + c.nz * 3) * 100 | 0) % 3;
+const RING_STEPS = 72;
+const FOV = 500; // lower = stronger perspective, rings feel closer
 
-  strokeWeight(0.6 + (1 - c.nz) * 0.8);
+function drawRingToTrail(rg, la) {
+  const t = rg.t;
 
-  if (variant === 0) {
-    // Wireframe box
-    stroke(0, alpha);
-    noFill();
-    box(sz);
+  // Ring center drifts in 3D space driven by noise + loop
+  const noiseScale = 1.4;
+  const noiseSpeed = 0.18;
+  const cx3 = (noise(t * noiseScale,         la * noiseSpeed + phaseA) - 0.5) * W * 0.55;
+  const cy3 = (noise(t * noiseScale + 5,     la * noiseSpeed + phaseB) - 0.5) * H * 0.58;
+  const cz3 = (noise(t * noiseScale + 10,    la * noiseSpeed + phaseC) - 0.5) * 400;
 
-  } else if (variant === 1) {
-    // Nested wireframe boxes
-    stroke(0, alpha);
-    noFill();
-    box(sz);
-    const inner = sz * (0.45 + 0.15 * sin(loopAngle + c.nx * PI));
-    stroke(0, alpha * 0.45);
-    box(inner);
+  // Ring radius — varies by index and breathes
+  const baseR = map(t, 0, 1, W * 0.12, W * 0.42);
+  const breathe = 0.7 + 0.3 * sin(la * 1.1 + t * TWO_PI * 2.3 + phaseD);
+  const rx = baseR * breathe;
+  const ry = baseR * breathe * (0.55 + 0.45 * noise(t * 2.1 + 3, la * 0.22 + phaseE));
 
-  } else {
-    // Three intersecting rectangles (XY, XZ, YZ planes)
-    noFill();
-    stroke(0, alpha);
-    beginShape();
-    vertex(-h, -h, 0); vertex(h, -h, 0);
-    vertex(h, h, 0);   vertex(-h, h, 0);
-    endShape(CLOSE);
+  // Ring plane orientation — slow tumble driven by noise
+  const rotX = la * (0.18 + t * 0.26) + phaseA + noise(t * 1.8, la * 0.12) * TWO_PI;
+  const rotY = la * (0.22 + t * 0.19) + phaseB + noise(t * 1.6 + 7, la * 0.14) * TWO_PI;
+  const rotZ = la * (0.08 + t * 0.13) + phaseC;
 
-    stroke(0, alpha * 0.6);
-    beginShape();
-    vertex(-h, 0, -h); vertex(h, 0, -h);
-    vertex(h, 0, h);   vertex(-h, 0, h);
-    endShape(CLOSE);
+  // Depth: front rings are bright+thick, back rings are dim+thin
+  const normZ = map(cz3, -400, 400, 0, 1);
+  const depthAlpha = map(normZ, 0, 1, 255, 55);
+  const sw = map(normZ, 0, 1, 2.8, 0.6);
 
-    stroke(0, alpha * 0.35);
-    beginShape();
-    vertex(0, -h, -h); vertex(0, h, -h);
-    vertex(0, h, h);   vertex(0, -h, h);
-    endShape(CLOSE);
+  // Project all ring points
+  const pts = [];
+  for (let s = 0; s <= RING_STEPS; s++) {
+    const angle = (s / RING_STEPS) * TWO_PI;
+    let lx = cos(angle) * rx;
+    let ly = sin(angle) * ry;
+    let lz = 0;
+
+    let x = lx * cos(rotZ) - ly * sin(rotZ);
+    let y = lx * sin(rotZ) + ly * cos(rotZ);
+    let z = lz;
+
+    const x2 = x * cos(rotY) + z * sin(rotY);
+    const z2 = -x * sin(rotY) + z * cos(rotY);
+    x = x2; z = z2;
+
+    const y2 = y * cos(rotX) - z * sin(rotX);
+    const z3 = y * sin(rotX) + z * cos(rotX);
+    y = y2; z = z3;
+
+    x += cx3; y += cy3; z += cz3;
+    const p = FOV / (FOV + z + 600);
+    pts.push([W * 0.5 + x * p, H * 0.5 + y * p]);
   }
 
-  // Dot at center for near-front cells
-  if (c.nz < 0.25 && alpha > 80) {
-    fill(0, alpha);
-    noStroke();
-    sphere(sz * 0.07);
-    noFill();
+  // Draw ring
+  trailLayer.noFill();
+  trailLayer.strokeWeight(sw);
+  trailLayer.stroke(255, depthAlpha);
+  trailLayer.beginShape();
+  for (const [sx, sy] of pts) trailLayer.vertex(sx, sy);
+  trailLayer.endShape(CLOSE);
+
+  // Small dot at ring center (near rings only)
+  if (normZ < 0.40 && depthAlpha > 100) {
+    const p = FOV / (FOV + cz3 + 600);
+    const sx = W * 0.5 + cx3 * p;
+    const sy = H * 0.5 + cy3 * p;
+    trailLayer.noStroke();
+    trailLayer.fill(255, depthAlpha * 0.85);
+    trailLayer.circle(sx, sy, sw * 2.2);
+    trailLayer.noFill();
+  }
+
+  // Connector line: ring center → global attractor
+  const attrX = W * 0.5 + sin(la * 0.37 + phaseE) * W * 0.18;
+  const attrY = H * 0.5 + cos(la * 0.29 + phaseF) * H * 0.22;
+  const p2 = FOV / (FOV + cz3 + 600);
+  const projX = W * 0.5 + cx3 * p2;
+  const projY = H * 0.5 + cy3 * p2;
+  const connAlpha = depthAlpha * 0.15;
+  if (connAlpha > 4) {
+    trailLayer.strokeWeight(0.5);
+    trailLayer.stroke(255, connAlpha);
+    trailLayer.line(projX, projY, attrX, attrY);
   }
 }
 
@@ -211,18 +237,20 @@ function renderPaperTexture() {
   paperLayer.clear();
   paperLayer.noStroke();
   for (let i = 0; i < PAPER_DOTS; i++) {
-    const shade = random() > 0.12 ? 0 : 255;
-    const alpha = shade === 0 ? random(2, 10) : random(1, 6);
+    const shade = random() > 0.15 ? 255 : 180;
+    const alpha = random(1, 7);
     paperLayer.fill(shade, alpha);
     paperLayer.circle(random(W), random(H), random(0.3, 1.6));
   }
-  paperLayer.stroke(0, 6);
+  paperLayer.stroke(255, 4);
   for (let i = 0; i < PAPER_FIBERS; i++) {
     const x = random(W);
     const y = random(H);
-    paperLayer.line(x, y, x + random(-7, 7), y + random(18, 130));
+    paperLayer.line(x, y, x + random(-6, 6), y + random(16, 100));
   }
 }
+
+// ─── Vignette ─────────────────────────────────────────────────────────────────
 
 // ─── Interaction ──────────────────────────────────────────────────────────────
 
@@ -236,7 +264,7 @@ function keyReleased() {
     return false;
   }
   if (key === 's' || key === 'S') {
-    saveCanvas('20260407_v4_' + timestampString(), 'png');
+    saveCanvas('20260409_' + timestampString(), 'png');
     return false;
   }
   if (keyCode === DELETE || keyCode === BACKSPACE) {
