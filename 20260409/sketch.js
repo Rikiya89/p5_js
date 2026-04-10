@@ -10,8 +10,14 @@ const LOOP_SECONDS = 20;
 const LOOP_FRAMES = FPS * LOOP_SECONDS;
 
 // Ring field
-const RING_COUNT = 80;
-const TRAIL_ALPHA = 22;   // higher = shorter trail, cleaner shapes
+const RING_COUNT = 24;
+const TRAIL_ALPHA = 30;   // higher = shorter trail, cleaner shapes
+
+// Lissajous n:m pairs — each ring gets one based on its index
+const LISSAJOUS_PAIRS = [
+  [1, 2], [2, 3], [3, 4], [3, 5], [4, 5],
+  [5, 6], [2, 5], [3, 7], [4, 7], [5, 8],
+];
 
 const PAPER_DOTS = 14000;
 const PAPER_FIBERS = 140;
@@ -143,24 +149,35 @@ function draw() {
 // We rotate the ring's plane with noise-animated Euler angles, then project each
 // sample point using a simple perspective divide.
 
-const RING_STEPS = 72;
+const RING_STEPS = 360;
 const FOV = 500; // lower = stronger perspective, rings feel closer
 
 function drawRingToTrail(rg, la) {
   const t = rg.t;
 
-  // Ring center drifts in 3D space driven by noise + loop
-  const noiseScale = 1.4;
-  const noiseSpeed = 0.18;
-  const cx3 = (noise(t * noiseScale,         la * noiseSpeed + phaseA) - 0.5) * W * 0.55;
-  const cy3 = (noise(t * noiseScale + 5,     la * noiseSpeed + phaseB) - 0.5) * H * 0.58;
-  const cz3 = (noise(t * noiseScale + 10,    la * noiseSpeed + phaseC) - 0.5) * 400;
+  // Ring center: deterministic grid (3 cols × 8 rows) + small noise drift
+  const cols = 3, rows = 8;
+  const col = floor(t * cols) % cols;
+  const row = floor(t * (cols * rows) / cols) % rows;
+  const gridX = map(col, 0, cols - 1, -W * 0.35, W * 0.35);
+  const gridY = map(row, 0, rows - 1, -H * 0.42, H * 0.42);
+  const noiseSpeed = 0.12;
+  const drift = W * 0.10; // small wander so it's not rigid
+  const cx3 = gridX + (noise(t * 1.4,     la * noiseSpeed + phaseA) - 0.5) * drift;
+  const cy3 = gridY + (noise(t * 1.4 + 5, la * noiseSpeed + phaseB) - 0.5) * drift;
+  const cz3 = (noise(t * 1.4 + 10,        la * noiseSpeed + phaseC) - 0.5) * 300;
 
   // Ring radius — varies by index and breathes
-  const baseR = map(t, 0, 1, W * 0.12, W * 0.42);
+  const baseR = map(t, 0, 1, W * 0.14, W * 0.28);
   const breathe = 0.7 + 0.3 * sin(la * 1.1 + t * TWO_PI * 2.3 + phaseD);
   const rx = baseR * breathe;
-  const ry = baseR * breathe * (0.55 + 0.45 * noise(t * 2.1 + 3, la * 0.22 + phaseE));
+  const ry = rx; // keep pure Lissajous (circular bounding box)
+
+  // Lissajous n:m pair for this ring
+  const [lN, lM] = LISSAJOUS_PAIRS[floor(t * LISSAJOUS_PAIRS.length)];
+  // δ must be integer multiple of TWO_PI per loop for seamless looping
+  const kPhase = floor(1 + t * 3); // integer: 1, 2 or 3 open/close cycles per loop
+  const delta = la * kPhase + rg.seed;
 
   // Ring plane orientation — slow tumble driven by noise
   const rotX = la * (0.18 + t * 0.26) + phaseA + noise(t * 1.8, la * 0.12) * TWO_PI;
@@ -176,8 +193,8 @@ function drawRingToTrail(rg, la) {
   const pts = [];
   for (let s = 0; s <= RING_STEPS; s++) {
     const angle = (s / RING_STEPS) * TWO_PI;
-    let lx = cos(angle) * rx;
-    let ly = sin(angle) * ry;
+    let lx = rx * sin(lN * angle + delta);
+    let ly = ry * sin(lM * angle);
     let lz = 0;
 
     let x = lx * cos(rotZ) - ly * sin(rotZ);
@@ -197,13 +214,32 @@ function drawRingToTrail(rg, la) {
     pts.push([W * 0.5 + x * p, H * 0.5 + y * p]);
   }
 
-  // Draw ring
+  // Partial arc: draw ~70% of curve, window rotates with la
+  const arcLen = floor(RING_STEPS * 0.70);
+  const startStep = floor((la / TWO_PI) * RING_STEPS) % RING_STEPS;
+
   trailLayer.noFill();
-  trailLayer.strokeWeight(sw);
-  trailLayer.stroke(255, depthAlpha);
-  trailLayer.beginShape();
-  for (const [sx, sy] of pts) trailLayer.vertex(sx, sy);
-  trailLayer.endShape(CLOSE);
+
+  // Pass 1: glow — thick + dim
+  trailLayer.strokeWeight(sw * 4.5);
+  trailLayer.stroke(255, depthAlpha * 0.18);
+  for (let i = 1; i <= arcLen; i++) {
+    const a = (startStep + i - 1) % RING_STEPS;
+    const b = (startStep + i)     % RING_STEPS;
+    trailLayer.line(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
+  }
+
+  // Pass 2: core line — velocity-adaptive weight (thicker at slow cusps)
+  for (let i = 1; i <= arcLen; i++) {
+    const a = (startStep + i - 1) % RING_STEPS;
+    const b = (startStep + i)     % RING_STEPS;
+    const vel = dist(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
+    // slow segments (cusps) → thick; fast segments → thin
+    const w = map(vel, 0, rx * 0.06, sw * 3.2, sw * 0.5, true);
+    trailLayer.strokeWeight(w);
+    trailLayer.stroke(255, depthAlpha);
+    trailLayer.line(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
+  }
 
   // Small dot at ring center (near rings only)
   if (normZ < 0.40 && depthAlpha > 100) {
