@@ -3,17 +3,17 @@
 const W = 1080;
 const H = 1920;
 const FPS = 60;
-const MAX_DURATION = 24;
+const MAX_DURATION = 12;
 const MAX_FRAMES = FPS * MAX_DURATION;
 
-const TILE_COUNT_X = 10;
-const TILE_COUNT_Y = 10;
-const LOOP_SECONDS = 12;
+const TILE_COUNT_X = 15;
+const TILE_COUNT_Y = 15;
+const LOOP_SECONDS = 15;
 const LOOP_FRAMES = FPS * LOOP_SECONDS;
-const MIN_CIRCLES = 5;
-const MAX_CIRCLES = 24;
+const MIN_CIRCLES = 6;
+const MAX_CIRCLES = 12;
 const PAPER_DOTS = 18000;
-const PAPER_FIBERS = 260;
+const PAPER_FIBERS = 270;
 
 let tileWidth = 0;
 let tileHeight = 0;

@@ -11,7 +11,51 @@ const LOOP_FRAMES = FPS * LOOP_SECONDS;
 
 // Ring field
 const RING_COUNT = 24;
-const TRAIL_ALPHA = 30;   // higher = shorter trail, cleaner shapes
+const TRAIL_ALPHA = 28;   // higher = shorter trail, cleaner shapes
+
+// Background the trail fades toward (deep navy — makes neons glow hard without blowing out)
+// ── FULL PALETTE ──────────────────────────────────────────────────────────────
+const COL = {
+  darkSlate: [41, 48, 57],   // #293039
+  darkForest: [40, 54, 49],  // #283631
+  deepNavy: [13, 31, 45],    // #0d1f2d
+  deepGreen: [10, 61, 46],   // #0a3d2e
+
+  neonGreen: [0, 255, 135],  // #00ff87
+  neonCyan: [0, 212, 255],   // #00d4ff
+  electricPurple: [123, 47, 255], // #7b2fff
+  neonPink: [255, 45, 122],  // #ff2d7a
+
+  pastelMint: [176, 255, 232], // #b0ffe8
+  pastelSky: [196, 240, 255],  // #c4f0ff
+};
+
+// Base background
+const BG = COL.deepNavy;
+
+// Ring/glow palette only
+const PALETTE = [
+  COL.electricPurple,
+  COL.neonPink,
+  COL.neonCyan,
+  COL.neonGreen,
+  COL.pastelMint,
+  COL.pastelSky,
+];
+
+function ringColor(t) {
+  const n = PALETTE.length;
+  const f = t * (n - 1);
+  const i = floor(f);
+  const k = f - i;
+  const a = PALETTE[i];
+  const b = PALETTE[min(i + 1, n - 1)];
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k,
+  ];
+}
 
 // Lissajous n:m pairs — each ring gets one based on its index
 const LISSAJOUS_PAIRS = [
@@ -51,7 +95,7 @@ function setup() {
   trailLayer = createGraphics(W, H);
   trailLayer.pixelDensity(1);
   trailLayer.colorMode(RGB, 255, 255, 255, 255);
-  trailLayer.background(0);
+  trailLayer.background(BG[0], BG[1], BG[2]);
 
   paperLayer = createGraphics(W, H);
   paperLayer.pixelDensity(1);
@@ -88,9 +132,9 @@ function reseedPattern(seed) {
   phaseE = random(TWO_PI);
   phaseF = random(TWO_PI);
 
-  // Reset trail to black
+  // Reset trail to background color
   if (trailLayer) {
-    trailLayer.background(0);
+    trailLayer.background(BG[0], BG[1], BG[2]);
   }
 
   renderPaperTexture();
@@ -104,7 +148,7 @@ function draw() {
 
   // --- Fade trail layer (motion blur) ---
   trailLayer.noStroke();
-  trailLayer.fill(0, TRAIL_ALPHA);
+  trailLayer.fill(BG[0], BG[1], BG[2], TRAIL_ALPHA);
   trailLayer.rect(0, 0, W, H);
 
   // --- Draw each ring onto trail layer ---
@@ -112,17 +156,20 @@ function draw() {
     drawRingToTrail(rings[i], la);
   }
 
-  // Global attractor — small bright dot
+  // Global attractor — warm dot with soft halo
   const attrX = W * 0.5 + sin(la * 0.37 + phaseE) * W * 0.18;
   const attrY = H * 0.5 + cos(la * 0.29 + phaseF) * H * 0.22;
   const attrPulse = 0.7 + 0.3 * sin(la * 2.3 + phaseA);
+  const ac = ringColor(0.08); // warm end of palette
   trailLayer.noStroke();
-  trailLayer.fill(255, 200 * attrPulse);
+  trailLayer.fill(ac[0], ac[1], ac[2], 70 * attrPulse);
+  trailLayer.circle(attrX, attrY, 26 * attrPulse);
+  trailLayer.fill(196, 240, 255, 220 * attrPulse); // pastel sky core #c4f0ff
   trailLayer.circle(attrX, attrY, 7 * attrPulse);
   trailLayer.noFill();
 
   // --- Composite to WEBGL canvas ---
-  background(0);
+  background(BG[0], BG[1], BG[2]);
   push();
   translate(-W / 2, -H / 2, 0);
   image(trailLayer, 0, 0);
@@ -135,6 +182,9 @@ function draw() {
   image(paperLayer, 0, 0);
   noTint();
   pop();
+
+  // --- Vignette: soft radial darkening at corners ---
+  drawVignette();
 
   if (isRecording) {
     captureFrame();
@@ -220,24 +270,31 @@ function drawRingToTrail(rg, la) {
 
   trailLayer.noFill();
 
-  // Pass 1: glow — thick + dim
+  // Pick this ring's color from the palette (hue shifts slowly with time)
+  const hueShift = 0.08 * sin(la + rg.seed * 0.01);
+  const ringCol = ringColor(constrain(t + hueShift, 0, 1));
+
+  // Pass 1: glow — thick + saturated color + low alpha (bloom halo)
   trailLayer.strokeWeight(sw * 4.5);
-  trailLayer.stroke(255, depthAlpha * 0.18);
+  trailLayer.stroke(ringCol[0], ringCol[1], ringCol[2], depthAlpha * 0.22);
   for (let i = 1; i <= arcLen; i++) {
     const a = (startStep + i - 1) % RING_STEPS;
     const b = (startStep + i)     % RING_STEPS;
     trailLayer.line(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
   }
 
-  // Pass 2: core line — velocity-adaptive weight (thicker at slow cusps)
+  // Pass 2: core line — bright (near-white) + velocity-adaptive weight
+  // Core is desaturated toward white so curves stay crisp and readable
+  const cr = lerp(ringCol[0], 255, 0.55);
+  const cg = lerp(ringCol[1], 255, 0.55);
+  const cb = lerp(ringCol[2], 255, 0.55);
   for (let i = 1; i <= arcLen; i++) {
     const a = (startStep + i - 1) % RING_STEPS;
     const b = (startStep + i)     % RING_STEPS;
     const vel = dist(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
-    // slow segments (cusps) → thick; fast segments → thin
     const w = map(vel, 0, rx * 0.06, sw * 3.2, sw * 0.5, true);
     trailLayer.strokeWeight(w);
-    trailLayer.stroke(255, depthAlpha);
+    trailLayer.stroke(cr, cg, cb, depthAlpha);
     trailLayer.line(pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
   }
 
@@ -247,21 +304,21 @@ function drawRingToTrail(rg, la) {
     const sx = W * 0.5 + cx3 * p;
     const sy = H * 0.5 + cy3 * p;
     trailLayer.noStroke();
-    trailLayer.fill(255, depthAlpha * 0.85);
+    trailLayer.fill(cr, cg, cb, depthAlpha * 0.9);
     trailLayer.circle(sx, sy, sw * 2.2);
     trailLayer.noFill();
   }
 
-  // Connector line: ring center → global attractor
+  // Connector line: ring center → global attractor (tinted, very faint)
   const attrX = W * 0.5 + sin(la * 0.37 + phaseE) * W * 0.18;
   const attrY = H * 0.5 + cos(la * 0.29 + phaseF) * H * 0.22;
   const p2 = FOV / (FOV + cz3 + 600);
   const projX = W * 0.5 + cx3 * p2;
   const projY = H * 0.5 + cy3 * p2;
-  const connAlpha = depthAlpha * 0.15;
+  const connAlpha = depthAlpha * 0.14;
   if (connAlpha > 4) {
     trailLayer.strokeWeight(0.5);
-    trailLayer.stroke(255, connAlpha);
+    trailLayer.stroke(ringCol[0], ringCol[1], ringCol[2], connAlpha);
     trailLayer.line(projX, projY, attrX, attrY);
   }
 }
@@ -272,13 +329,27 @@ function renderPaperTexture() {
   if (!paperLayer) return;
   paperLayer.clear();
   paperLayer.noStroke();
+
   for (let i = 0; i < PAPER_DOTS; i++) {
-    const shade = random() > 0.15 ? 255 : 180;
-    const alpha = random(1, 7);
-    paperLayer.fill(shade, alpha);
-    paperLayer.circle(random(W), random(H), random(0.3, 1.6));
+    const mix = random();
+    let c;
+
+    if (mix < 0.35) c = COL.darkSlate;
+    else if (mix < 0.7) c = COL.darkForest;
+    else c = COL.deepGreen;
+
+    const alpha = random(3, 10);
+    paperLayer.fill(c[0], c[1], c[2], alpha);
+    paperLayer.circle(random(W), random(H), random(0.3, 1.8));
   }
-  paperLayer.stroke(255, 4);
+
+  for (let i = 0; i < PAPER_DOTS * 0.08; i++) {
+    const c = random() > 0.5 ? COL.pastelMint : COL.pastelSky;
+    paperLayer.fill(c[0], c[1], c[2], random(2, 6));
+    paperLayer.circle(random(W), random(H), random(0.3, 1.2));
+  }
+
+  paperLayer.stroke(COL.darkForest[0], COL.darkForest[1], COL.darkForest[2], 18);
   for (let i = 0; i < PAPER_FIBERS; i++) {
     const x = random(W);
     const y = random(H);
@@ -287,6 +358,34 @@ function renderPaperTexture() {
 }
 
 // ─── Vignette ─────────────────────────────────────────────────────────────────
+// Ring-based vignette drawn in WEBGL immediate mode. Alpha rises toward corners
+// so the center stays clean and the edges sink into the background color.
+
+function drawVignette() {
+  push();
+  noFill();
+  const steps = 80;
+  const maxR = dist(0, 0, W / 2, H / 2) * 1.08;
+  const sw = (maxR / steps) * 2 + 2;
+  strokeWeight(sw);
+
+  for (let i = 0; i < steps; i++) {
+    const k = i / (steps - 1);
+    const a = map(k, 0.55, 1.0, 0, 180, true);
+    if (a <= 0) continue;
+
+    const c = [
+      lerp(COL.deepNavy[0], COL.darkForest[0], k),
+      lerp(COL.deepNavy[1], COL.darkForest[1], k),
+      lerp(COL.deepNavy[2], COL.darkForest[2], k),
+    ];
+
+    stroke(c[0], c[1], c[2], a);
+    const r = lerp(0, maxR, k);
+    circle(0, 0, r * 2);
+  }
+  pop();
+}
 
 // ─── Interaction ──────────────────────────────────────────────────────────────
 
