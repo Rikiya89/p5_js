@@ -1,5 +1,18 @@
 'use strict';
 
+const COL = {
+  darkSlate:       [41, 48, 57],
+  darkForest:      [40, 54, 49],
+  deepNavy:        [13, 31, 45],
+  deepGreen:       [10, 61, 46],
+  neonGreen:       [0, 255, 135],
+  neonCyan:        [0, 212, 255],
+  electricPurple:  [123, 47, 255],
+  neonPink:        [255, 45, 122],
+  pastelMint:      [176, 255, 232],
+  pastelSky:       [196, 240, 255],
+};
+
 const W = 1080;
 const H = 1920;
 const FPS = 60;
@@ -91,7 +104,7 @@ function draw() {
   const loop = (frameCount % LOOP_FRAMES) / LOOP_FRAMES;
   const loopAngle = loop * TWO_PI;
 
-  background(255);
+  background(...COL.deepNavy);
 
   // Slow global camera tilt
   rotateX(cos(loopAngle * 0.35 + phaseB) * 0.18);
@@ -159,45 +172,45 @@ function drawCell(sz, alpha, c, loopAngle) {
   strokeWeight(0.6 + (1 - c.nz) * 0.8);
 
   if (variant === 0) {
-    // Wireframe box
-    stroke(0, alpha);
+    // Wireframe box — neonCyan
+    stroke(...COL.neonCyan, alpha);
     noFill();
     box(sz);
 
   } else if (variant === 1) {
-    // Nested wireframe boxes
-    stroke(0, alpha);
+    // Nested wireframe boxes — neonGreen outer, electricPurple inner
+    stroke(...COL.neonGreen, alpha);
     noFill();
     box(sz);
     const inner = sz * (0.45 + 0.15 * sin(loopAngle + c.nx * PI));
-    stroke(0, alpha * 0.45);
+    stroke(...COL.electricPurple, alpha * 0.55);
     box(inner);
 
   } else {
-    // Three intersecting rectangles (XY, XZ, YZ planes)
+    // Three intersecting rectangles — neonPink / neonCyan / neonGreen
     noFill();
-    stroke(0, alpha);
+    stroke(...COL.neonPink, alpha);
     beginShape();
     vertex(-h, -h, 0); vertex(h, -h, 0);
     vertex(h, h, 0);   vertex(-h, h, 0);
     endShape(CLOSE);
 
-    stroke(0, alpha * 0.6);
+    stroke(...COL.neonCyan, alpha * 0.6);
     beginShape();
     vertex(-h, 0, -h); vertex(h, 0, -h);
     vertex(h, 0, h);   vertex(-h, 0, h);
     endShape(CLOSE);
 
-    stroke(0, alpha * 0.35);
+    stroke(...COL.neonGreen, alpha * 0.35);
     beginShape();
     vertex(0, -h, -h); vertex(0, h, -h);
     vertex(0, h, h);   vertex(0, -h, h);
     endShape(CLOSE);
   }
 
-  // Dot at center for near-front cells
+  // Dot at center for near-front cells — pastelMint
   if (c.nz < 0.25 && alpha > 80) {
-    fill(0, alpha);
+    fill(...COL.pastelMint, alpha);
     noStroke();
     sphere(sz * 0.07);
     noFill();
@@ -211,12 +224,16 @@ function renderPaperTexture() {
   paperLayer.clear();
   paperLayer.noStroke();
   for (let i = 0; i < PAPER_DOTS; i++) {
-    const shade = random() > 0.12 ? 0 : 255;
-    const alpha = shade === 0 ? random(2, 10) : random(1, 6);
-    paperLayer.fill(shade, alpha);
+    const bright = random() > 0.12;
+    const alpha = bright ? random(2, 10) : random(1, 6);
+    if (bright) {
+      paperLayer.fill(...COL.darkSlate, alpha);
+    } else {
+      paperLayer.fill(...COL.pastelSky, alpha);
+    }
     paperLayer.circle(random(W), random(H), random(0.3, 1.6));
   }
-  paperLayer.stroke(0, 6);
+  paperLayer.stroke(...COL.darkForest, 6);
   for (let i = 0; i < PAPER_FIBERS; i++) {
     const x = random(W);
     const y = random(H);
