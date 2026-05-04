@@ -298,8 +298,8 @@ function drawKnot(pts, t, weight) {
     const rm   = (a.rim   + b.rim)   * 0.5;
 
     // Body
-    webglLayer.stroke(255, 255, 255, 70 * fog * sh * weight);
-    webglLayer.strokeWeight(0.55 * weight);
+    webglLayer.stroke(255, 255, 255, 150 * fog * sh * weight);
+    webglLayer.strokeWeight(1.5 * weight);
     webglLayer.line(a.x, a.y, a.z, b.x, b.y, b.z);
     // Glow underlay
     webglLayer.stroke(255, 255, 255, 8 * fog * sh * weight);
@@ -307,8 +307,8 @@ function drawKnot(pts, t, weight) {
     webglLayer.line(a.x, a.y, a.z, b.x, b.y, b.z);
     // Rim — bright thin highlight on silhouette edges
     if (rm > 0.25) {
-      webglLayer.stroke(255, 255, 255, 200 * fog * rm * weight);
-      webglLayer.strokeWeight(0.35 * weight);
+      webglLayer.stroke(255, 255, 255, 235 * fog * rm * weight);
+      webglLayer.strokeWeight(0.95 * weight);
       webglLayer.line(a.x, a.y, a.z, b.x, b.y, b.z);
     }
   }
