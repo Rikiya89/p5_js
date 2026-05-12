@@ -11,27 +11,32 @@ const H = 1080;
 
 // Submission spec
 const FPS = 30000 / 1001; // 29.97fps
+const MUXER_FRAME_RATE = Math.round(FPS);
 const LOOP_SECONDS = 30;
 const LOOP_FRAMES = Math.round(FPS * LOOP_SECONDS); // 899 frames
 const VIDEO_BITRATE = 30000000; // 30Mbps target
 const VIDEO_FILENAME = 'tokyo_signal_bloom_color_1920x1080_30s_29.97fps_30mbps.mp4';
+const FADE_SECONDS = 1.8;
+const COMPOSITION_SCALE = 1.10;
 
 const TAU = Math.PI * 2;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-// Right-side official logo area.
-const SAFE_ZONE_RATIO = 0.22;
+// Full-frame submission. Venue-side layouts add logos and artist metadata.
+const SAFE_ZONE_RATIO = 0;
 const SAFE_ZONE_W = W * SAFE_ZONE_RATIO;
 const SAFE_ZONE_X = W - SAFE_ZONE_W;
 
-// Main composition shifted left.
-const CX = W * 0.37;
-const CY = H * 0.52;
+// Main composition centered for the submitted artwork.
+const CX = W * 0.5;
+const CY = H * 0.5;
+const ART_LEFT_X = -80;
+const ART_RIGHT_X = W + 90;
 
 // Outdoor signage tuning.
-const SIGNAGE_BRIGHTNESS = 1.28;
-const LINE_BOOST = 2.15;
-const DOT_BOOST = 1.85;
+const SIGNAGE_BRIGHTNESS = 1.38;
+const LINE_BOOST = 2.30;
+const DOT_BOOST = 2.00;
 const CENTER_SUPPRESSION_RADIUS = 185;
 const CENTER_SUPPRESSION_STRENGTH = 0.62;
 
@@ -94,13 +99,21 @@ function draw() {
   const currentFrame = isRecording ? recFrameCount : frameCount;
   const loop = (currentFrame % LOOP_FRAMES) / LOOP_FRAMES;
   const t = loop * TAU;
+  const fadeRatio = FADE_SECONDS / LOOP_SECONDS;
 
-  const opening = smoothstep(0.00, 0.20, loop);
-  const organize = smoothstep(0.16, 0.68, loop);
-  const bloom = smoothstep(0.36, 0.90, loop);
-  const finale = smoothstep(0.76, 1.00, loop);
+  const opening = smoothstep(0.00, fadeRatio, loop);
+  const organize = smoothstep(0.08, 0.46, loop);
+  const bloom = smoothstep(0.18, 0.62, loop);
+  const finale = smoothstep(0.62, 0.88, loop);
+  const fadeOut = 1 - smoothstep(1 - fadeRatio, 1.00, loop);
+  const masterFade = min(opening, fadeOut);
 
   background(BG[0], BG[1], BG[2]);
+
+  push();
+  translate(CX, CY);
+  scale(COMPOSITION_SCALE);
+  translate(-CX, -CY);
 
   drawColorWash(t, opening, bloom);
   drawTrail();
@@ -108,26 +121,37 @@ function draw() {
   drawSignageAnchor(t, opening, bloom, finale);
   drawRainField(t, opening);
   drawDistantGrid(t, opening, organize);
-  drawTokyoRoutes(t, opening, organize);
   drawCrossingSignals(t, opening, organize);
+  drawTokyoRoutes(t, opening, organize);
   drawMovingParticles(t, opening, organize, bloom);
   drawSignalGarden(t, opening, organize, bloom, finale);
   drawCityConstellation(t, opening, organize, bloom);
   drawFloatingGlyphs(t, opening, bloom);
+  pop();
+
   drawLogoSafeZone(t);
   drawScreenTexture(t);
+  drawMasterFade(masterFade);
 
   if (isRecording && !captureInProgress) {
     captureInProgress = true;
 
-    captureFrame().then(() => {
-      recFrameCount++;
-      captureInProgress = false;
+    captureFrame()
+      .then(() => {
+        recFrameCount++;
 
-      if (recFrameCount >= LOOP_FRAMES) {
+        if (recFrameCount >= LOOP_FRAMES) {
+          stopRecording();
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+        updateCaptureStatus('Capture failed. See console.');
         stopRecording();
-      }
-    });
+      })
+      .finally(() => {
+        captureInProgress = false;
+      });
   }
 }
 
@@ -163,7 +187,7 @@ function initSystem() {
       route: floor(random(ROUTE_COUNT)),
       k: random(1),
       phase: random(TAU),
-      speed: random(0.014, 0.055),
+      speed: random(0.026, 0.088),
       size: random(1.5, 5.2),
       orbit: random(0.75, 1.22),
       alpha: random(0.72, 1.0),
@@ -203,7 +227,7 @@ function initSystem() {
 
   for (let i = 0; i < RAIN_COUNT; i++) {
     rain.push({
-      x: random(60, SAFE_ZONE_X - 120),
+      x: random(ART_LEFT_X + 120, ART_RIGHT_X - 120),
       y: random(-H, H),
       len: random(24, 110),
       speed: random(0.28, 1.25),
@@ -361,14 +385,14 @@ function drawDistantGrid(t, opening, organize) {
     const k = i / 17;
     const y = lerp(H * 0.10, H * 0.92, k);
     const bend = sin(t * 0.25 + k * TAU) * 10;
-    line(80, y + bend, SAFE_ZONE_X - 140, y - bend * 0.5);
+    line(ART_LEFT_X + 160, y + bend, ART_RIGHT_X - 120, y - bend * 0.5);
   }
 
   stroke(VIOLET[0], VIOLET[1], VIOLET[2], alpha);
 
   for (let i = 0; i < 20; i++) {
     const k = i / 19;
-    const x = lerp(80, SAFE_ZONE_X - 140, k);
+    const x = lerp(ART_LEFT_X + 160, ART_RIGHT_X - 120, k);
     const sway = sin(t * 0.18 + k * 5.0) * 14;
     line(x + sway, H * 0.10, lerp(CX, x, 0.5), horizonY);
     line(lerp(CX, x, 0.5), horizonY, x - sway * 0.4, H * 0.92);
@@ -395,7 +419,7 @@ function drawTokyoRoutes(t, opening, organize) {
     beginShape();
     for (let i = 0; i <= 240; i++) {
       const k = i / 240;
-      const x = lerp(90, SAFE_ZONE_X - 135, k);
+      const x = lerp(ART_LEFT_X + 120, ART_RIGHT_X - 100, k);
       const y =
         route.y +
         sin(k * TAU * route.freq + route.phase + t * route.speed) * route.amp +
@@ -413,32 +437,32 @@ function drawCrossingSignals(t, opening, organize) {
   blendMode(ADD);
   strokeCap(ROUND);
 
-  const a = opening * (1 - organize * 0.25);
-  const left = 130;
-  const right = SAFE_ZONE_X - 205;
+  const a = opening * (1 - organize * 0.42) * 0.58;
+  const left = ART_LEFT_X + 110;
+  const right = ART_RIGHT_X - 90;
   const top = H * 0.20;
   const bottom = H * 0.82;
 
-  for (let i = 0; i < 9; i++) {
-    const k = i / 8;
+  for (let i = 0; i < 7; i++) {
+    const k = i / 6;
     const c = i % 2 === 0 ? CYAN : MAGENTA;
     const pulse = 0.5 + 0.5 * sin(t * 1.8 + i * 0.6);
 
-    stroke(c[0], c[1], c[2], (22 + 44 * pulse) * a * SIGNAGE_BRIGHTNESS);
-    strokeWeight((1.2 + pulse * 0.75) * LINE_BOOST);
+    stroke(c[0], c[1], c[2], (12 + 24 * pulse) * a * SIGNAGE_BRIGHTNESS);
+    strokeWeight((0.9 + pulse * 0.45) * LINE_BOOST);
 
     line(left, lerp(top, bottom, k), right, lerp(bottom, top, k));
     line(left, lerp(bottom, top, k), right, lerp(top, bottom, k));
   }
 
   for (let i = 0; i < 7; i++) {
-    const x = lerp(180, SAFE_ZONE_X - 270, i / 6);
+    const x = lerp(ART_LEFT_X + 260, ART_RIGHT_X - 240, i / 6);
     const h = 90 + 160 * noise(i * 0.4, t * 0.05);
     const pulse = 0.4 + 0.6 * sin(t * 2.0 + i);
     const c = PALETTE[i % PALETTE.length];
 
-    stroke(c[0], c[1], c[2], (24 + 42 * pulse) * a * SIGNAGE_BRIGHTNESS);
-    strokeWeight(2.6);
+    stroke(c[0], c[1], c[2], (13 + 26 * pulse) * a * SIGNAGE_BRIGHTNESS);
+    strokeWeight(2.0);
     line(x, CY - h, x, CY + h);
   }
 
@@ -455,14 +479,14 @@ function drawMovingParticles(t, opening, organize, bloom) {
     const c = PALETTE[p.colorIndex];
     const k = (p.k + t * p.speed) % 1;
 
-    const rx = lerp(90, SAFE_ZONE_X - 135, k);
+    const rx = lerp(ART_LEFT_X + 120, ART_RIGHT_X - 100, k);
     const ry =
       route.y +
       sin(k * TAU * route.freq + route.phase + t * route.speed) * route.amp +
       sin(k * PI + t * 0.35) * route.drift;
 
     const a = p.phase + k * TAU * 2.25 + t * 0.08;
-    const flowerR = 82 + 500 * pow(k, 0.58) * p.orbit;
+    const flowerR = 82 + (500 + bloom * 32) * pow(k, 0.58) * p.orbit;
     const petal = 1 + 0.18 * cos(a * 10 - t * 0.72) + 0.04 * sin(a * 5 + t);
 
     const fx = CX + cos(a) * flowerR * petal;
@@ -482,7 +506,7 @@ function drawMovingParticles(t, opening, organize, bloom) {
     const pulse = 0.5 + 0.5 * sin(t * 3.2 + p.phase);
 
     const alpha =
-      (58 + 132 * pulse) *
+      (72 + 148 * pulse) *
       opening *
       p.alpha *
       (0.76 + bloom * 0.32) *
@@ -492,7 +516,7 @@ function drawMovingParticles(t, opening, organize, bloom) {
     const size =
       p.size *
       DOT_BOOST *
-      (1.1 + pulse * 1.25 + bloom * 0.55) *
+      (1.18 + pulse * 1.34 + bloom * 0.62) *
       centerSuppression;
 
     fill(c[0], c[1], c[2], alpha);
@@ -820,20 +844,23 @@ function drawFloatingGlyphs(t, opening, bloom) {
 }
 
 function drawLogoSafeZone(t) {
+  if (SAFE_ZONE_W <= 0) return;
+
   noStroke();
 
-  for (let i = 0; i < 150; i++) {
-    const k = i / 149;
-    fill(0, 0, 0, 5 + 11 * k);
-    rect(SAFE_ZONE_X - 190 + k * 190, 0, 3, H);
+  for (let i = 0; i < 220; i++) {
+    const k = i / 219;
+    const alpha = 2 + 34 * pow(k, 1.75);
+    fill(0, 0, 0, alpha);
+    rect(SAFE_ZONE_X - 220 + i, 0, 1, H);
   }
 
-  fill(0, 0, 0, 224);
+  fill(0, 0, 0, 52);
   rect(SAFE_ZONE_X, 0, SAFE_ZONE_W, H);
 
-  stroke(INK[0], INK[1], INK[2], 24 + 8 * sin(t));
+  stroke(INK[0], INK[1], INK[2], 10 + 4 * sin(t));
   strokeWeight(1.2);
-  line(SAFE_ZONE_X, H * 0.14, SAFE_ZONE_X, H * 0.86);
+  line(SAFE_ZONE_X, H * 0.20, SAFE_ZONE_X, H * 0.80);
 }
 
 function drawScreenTexture(t) {
@@ -847,13 +874,23 @@ function drawScreenTexture(t) {
   }
 
   for (let i = 0; i < 36; i++) {
-    const x = random(0, SAFE_ZONE_X - 40);
+    const x = random(0, W);
     const y = random(0, H);
     fill(255, 255, 255, random(1.0, 4.5));
     rect(x, y, 1, 1);
   }
 
   blendMode(BLEND);
+}
+
+function drawMasterFade(amount) {
+  const alpha = 255 * (1 - amount);
+  if (alpha <= 0) return;
+
+  blendMode(BLEND);
+  noStroke();
+  fill(BG[0], BG[1], BG[2], alpha);
+  rect(0, 0, W, H);
 }
 
 // -----------------------------------------------------------------------------
@@ -910,7 +947,6 @@ async function startRecording() {
 
   recFrameCount = 0;
   captureInProgress = false;
-  isRecording = true;
   trail.clear();
 
   const startBtn = document.getElementById('startBtn');
@@ -921,38 +957,59 @@ async function startRecording() {
   updateCaptureStatus('Recording: 1920x1080 / 29.97fps / 30Mbps target / no audio');
   updateCaptureProgress();
 
-  muxer = new Mp4Muxer.Muxer({
-    target: new Mp4Muxer.ArrayBufferTarget(),
-    video: {
-      codec: 'avc',
+  try {
+    muxer = new Mp4Muxer.Muxer({
+      target: new Mp4Muxer.ArrayBufferTarget(),
+      video: {
+        codec: 'avc',
+        width: W,
+        height: H,
+        frameRate: MUXER_FRAME_RATE,
+      },
+      fastStart: 'in-memory',
+    });
+
+    encoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error: (e) => {
+        console.error(e);
+        updateCaptureStatus('Encoder error. See console.');
+        stopRecording();
+      },
+    });
+
+    encoder.configure({
+      codec: 'avc1.64002A',
       width: W,
       height: H,
-      frameRate: FPS,
-    },
-    fastStart: 'in-memory',
-  });
+      bitrate: VIDEO_BITRATE,
+      bitrateMode: 'constant',
+      framerate: FPS,
+      avc: { format: 'avc' },
+      latencyMode: 'quality',
+    });
 
-  encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => {
-      console.error(e);
-      updateCaptureStatus('Encoder error. See console.');
-    },
-  });
+    isRecording = true;
+  } catch (error) {
+    console.error(error);
+    encoder = null;
+    muxer = null;
+    isRecording = false;
+    captureInProgress = false;
 
-  encoder.configure({
-    codec: 'avc1.64002A',
-    width: W,
-    height: H,
-    bitrate: VIDEO_BITRATE,
-    bitrateMode: 'constant',
-    framerate: FPS,
-    avc: { format: 'avc' },
-    latencyMode: 'quality',
-  });
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+
+    updateCaptureStatus('Recording setup failed. See console.');
+    updateCaptureProgress();
+  }
 }
 
 async function captureFrame() {
+  if (!encoder) {
+    throw new Error('VideoEncoder is not initialized.');
+  }
+
   const bitmap = await createImageBitmap(canvasEl);
 
   const frame = new VideoFrame(bitmap, {
