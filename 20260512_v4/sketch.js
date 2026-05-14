@@ -51,6 +51,7 @@ let muxer = null;
 let encoder = null;
 let isRecording = false;
 let recFrameCount = 0;
+let captureInProgress = false;
 
 function setup() {
   const cnv = createCanvas(W, H, WEBGL);
@@ -107,14 +108,16 @@ function draw() {
   drawScreenEffects(time);
   drawHUD(time);
 
-  if (isRecording) {
-    captureFrame();
-    recFrameCount++;
-    updateRecordingHUD();
-
-    if (recFrameCount >= LOOP_FRAMES) {
-      stopRecording();
-    }
+  if (isRecording && !captureInProgress) {
+    captureInProgress = true;
+    captureFrame()
+      .then(() => {
+        recFrameCount++;
+        updateRecordingHUD();
+        if (recFrameCount >= LOOP_FRAMES) stopRecording();
+      })
+      .catch(e => { console.error(e); stopRecording(); })
+      .finally(() => { captureInProgress = false; });
   }
 }
 
@@ -670,120 +673,118 @@ function drawHUD(time) {
 // Capture helpers — WebCodecs + mp4-muxer
 // ---------------------------------------------------------------------------
 function setupCaptureUI() {
-  const maxDurEl = document.getElementById('maxDuration');
-  const maxFramesEl = document.getElementById('maxFrames');
-  const canvasSizeEl = document.getElementById('canvasSize');
-  const startBtn = document.getElementById('startRecord');
-  const stopBtn = document.getElementById('stopRecord');
-
-  if (maxDurEl) maxDurEl.textContent = LOOP_SECONDS;
-  if (maxFramesEl) maxFramesEl.textContent = LOOP_FRAMES;
-  if (canvasSizeEl) canvasSizeEl.textContent = W + ' × ' + H;
-
-  if (startBtn) {
-    startBtn.addEventListener('click', startRecording);
-  }
-
-  if (stopBtn) {
-    stopBtn.addEventListener('click', stopRecording);
-  }
+  const el = (id) => document.getElementById(id);
+  if (el('maxDuration'))  el('maxDuration').textContent  = LOOP_SECONDS;
+  if (el('maxFrames'))    el('maxFrames').textContent    = LOOP_FRAMES;
+  if (el('canvasSize'))   el('canvasSize').textContent   = `${W}×${H} / ${FPS}fps`;
 }
 
 function updateRecordingHUD() {
-  const recFrameEl = document.getElementById('recFrame');
-  const recStatusEl = document.getElementById('recStatus');
-
-  if (recFrameEl) recFrameEl.textContent = recFrameCount + ' / ' + LOOP_FRAMES;
-  if (recStatusEl) recStatusEl.textContent = isRecording ? 'recording' : 'idle';
+  const pf  = document.getElementById('progressFill');
+  const dur = document.getElementById('duration');
+  const fc  = document.getElementById('frameCount');
+  const st  = document.getElementById('status');
+  const p   = Math.min(recFrameCount / LOOP_FRAMES, 1);
+  if (pf)  pf.style.width  = `${(p * 100).toFixed(1)}%`;
+  if (dur) dur.textContent = (recFrameCount / FPS).toFixed(1);
+  if (fc)  fc.textContent  = recFrameCount;
+  if (st && isRecording) st.textContent = `Recording… ${(p * 100).toFixed(0)}%`;
 }
 
 async function startRecording() {
   if (isRecording) return;
-
-  if (typeof VideoEncoder === 'undefined') {
-    alert('VideoEncoder is not available. Use Chrome or Edge.');
-    return;
-  }
-
-  if (typeof Mp4Muxer === 'undefined') {
-    alert('Mp4Muxer is not loaded. Check your mp4-muxer script.');
+  if (!window.VideoEncoder || !window.Mp4Muxer) {
+    alert('VideoEncoder or Mp4Muxer unavailable. Use Chrome/Edge.');
     return;
   }
 
   recFrameCount = 0;
-  isRecording = true;
+  captureInProgress = false;
+
+  const sb = document.getElementById('startBtn');
+  const rb = document.getElementById('stopBtn');
+  if (sb) sb.disabled = true;
+  if (rb) rb.disabled = false;
+
+  const st = document.getElementById('status');
+  if (st) st.textContent = `Recording ${W}×${H} / ${FPS}fps`;
 
   initAggregation();
   trailLayer.clear();
 
-  const ArrayBufferTarget = Mp4Muxer.ArrayBufferTarget || Mp4Muxer.default?.ArrayBufferTarget;
-  const Muxer = Mp4Muxer.Muxer || Mp4Muxer.default?.Muxer;
+  try {
+    muxer = new Mp4Muxer.Muxer({
+      target: new Mp4Muxer.ArrayBufferTarget(),
+      video: { codec: 'avc', width: W, height: H, frameRate: FPS },
+      fastStart: 'in-memory',
+    });
 
-  muxer = new Muxer({
-    target: new ArrayBufferTarget(),
-    video: {
-      codec: 'avc',
-      width: W,
-      height: H,
-      frameRate: FPS,
-    },
-    fastStart: 'in-memory',
-  });
+    encoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error:  (e) => { console.error(e); stopRecording(); },
+    });
 
-  encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => console.error(e),
-  });
+    encoder.configure({
+      codec: 'avc1.64002A', width: W, height: H,
+      bitrate: 14_000_000, bitrateMode: 'constant',
+      framerate: FPS, avc: { format: 'avc' }, latencyMode: 'quality',
+    });
 
-  encoder.configure({
-    codec: 'avc1.640034',
-    width: W,
-    height: H,
-    bitrate: 14_000_000,
-    framerate: FPS,
-  });
-
-  updateRecordingHUD();
+    isRecording = true;
+  } catch (e) {
+    console.error(e);
+    encoder = muxer = null;
+    if (sb) sb.disabled = false;
+    if (rb) rb.disabled = true;
+    const st2 = document.getElementById('status');
+    if (st2) st2.textContent = 'Setup failed. See console.';
+  }
 }
 
-function captureFrame() {
+async function captureFrame() {
   if (!encoder || !canvasEl) return;
-
-  const frame = new VideoFrame(canvasEl, {
+  const bitmap = await createImageBitmap(canvasEl);
+  const frame  = new VideoFrame(bitmap, {
     timestamp: Math.round((recFrameCount * 1_000_000) / FPS),
+    duration:  Math.round(1_000_000 / FPS),
   });
-
-  encoder.encode(frame, {
-    keyFrame: recFrameCount % FPS === 0,
-  });
-
+  encoder.encode(frame, { keyFrame: recFrameCount % FPS === 0 });
   frame.close();
+  bitmap.close();
 }
 
 async function stopRecording() {
-  if (!isRecording) return;
-
+  if (!isRecording && !encoder) return;
   isRecording = false;
-  updateRecordingHUD();
+  captureInProgress = false;
 
-  if (!encoder || !muxer) return;
+  const st = document.getElementById('status');
+  if (st) st.textContent = 'Finalizing MP4…';
 
-  await encoder.flush();
-  muxer.finalize();
-
-  const buffer = muxer.target.buffer;
-  const blob = new Blob([buffer], { type: 'video/mp4' });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'limited-diffusion-aggregation-monolith.mp4';
-  a.click();
-
-  URL.revokeObjectURL(url);
-
-  encoder = null;
-  muxer = null;
+  try {
+    if (encoder) await encoder.flush();
+    if (muxer) {
+      muxer.finalize();
+      const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = 'limited-diffusion-aggregation-monolith.mp4';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+    if (st) st.textContent = 'Done — MP4 saved.';
+  } catch (e) {
+    console.error(e);
+    if (st) st.textContent = 'Export failed. See console.';
+  } finally {
+    encoder = muxer = null;
+    const sb = document.getElementById('startBtn');
+    const rb = document.getElementById('stopBtn');
+    if (sb) sb.disabled = false;
+    if (rb) rb.disabled = true;
+    updateRecordingHUD();
+  }
 }
 
 // ---------------------------------------------------------------------------
