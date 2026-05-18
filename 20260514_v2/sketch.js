@@ -199,11 +199,11 @@ function draw() {
       const avgMag  = (da + db) * 0.5;
       const fogB    = constrain((pb.depth + BZ * 2) / (BZ * 4), 0, 1);
       const avgFog  = (fogA + fogB) * 0.5;
-      // Lines brightest at crests, invisible in flat regions
-      const lineAlpha = Math.pow(avgMag, 1.4) * 58 * avgFog * master;
-      if (lineAlpha > 1.5) {
+      const baseAlpha = (0.10 + Math.pow(avgMag, 1.3) * 0.90);
+      const lineAlpha = baseAlpha * 82 * avgFog * master;
+      if (lineAlpha > 1.0) {
         stroke(255, 255, 255, constrain(lineAlpha, 0, 255));
-        strokeWeight(1.4);
+        strokeWeight(1.6);
         line(pa.sx, pa.sy, pb.sx, pb.sy);
       }
     }
@@ -216,10 +216,28 @@ function draw() {
       const avgMag  = (da + db) * 0.5;
       const fogB    = constrain((pb.depth + BZ * 2) / (BZ * 4), 0, 1);
       const avgFog  = (fogA + fogB) * 0.5;
-      const lineAlpha = Math.pow(avgMag, 1.4) * 46 * avgFog * master;
-      if (lineAlpha > 1.5) {
+      const baseAlpha = (0.10 + Math.pow(avgMag, 1.3) * 0.90);
+      const lineAlpha = baseAlpha * 66 * avgFog * master;
+      if (lineAlpha > 1.0) {
         stroke(255, 255, 255, constrain(lineAlpha, 0, 255));
-        strokeWeight(1.1);
+        strokeWeight(1.3);
+        line(pa.sx, pa.sy, pb.sx, pb.sy);
+      }
+    }
+
+    // +Y neighbour (vertical column connections)
+    if (p.iy < ROWS - 1) {
+      const j  = i + COLS;
+      const pb = proj[j];
+      const db = Math.abs(disp[j]);
+      const avgMag  = (da + db) * 0.5;
+      const fogB    = constrain((pb.depth + BZ * 2) / (BZ * 4), 0, 1);
+      const avgFog  = (fogA + fogB) * 0.5;
+      const baseAlpha = (0.08 + Math.pow(avgMag, 1.4) * 0.92);
+      const lineAlpha = baseAlpha * 48 * avgFog * master;
+      if (lineAlpha > 1.0) {
+        stroke(255, 255, 255, constrain(lineAlpha, 0, 255));
+        strokeWeight(1.0);
         line(pa.sx, pa.sy, pb.sx, pb.sy);
       }
     }
