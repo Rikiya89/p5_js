@@ -6,7 +6,7 @@ const H = 1920;
 const FPS          = 60;
 const MAX_DURATION = 30;
 const MAX_FRAMES   = FPS * MAX_DURATION;
-const LOOP_FRAMES  = FPS * 20;   // 20-second seamless loop
+const LOOP_FRAMES  = FPS * 30;   // 30-second seamless loop
 
 // ─── Math ─────────────────────────────────────────────────────────────────────
 const TAU = Math.PI * 2;
