@@ -1,29 +1,69 @@
-# Daily p5.js Practice
+# p5xjs
 
-This repository gathers my day-to-day coding exercises built with p5.js. Each sketch lives in its own folder so I can track progress and experiments over time.
+Daily creative coding experiments built with [p5.js](https://p5js.org/).
 
-## Directory overview
+This repository is a collection of date-stamped sketches exploring generative art, mathematical visuals, WebGL experiments, procedural animation, and real-time visual systems.
 
-* `2025xxxx/` folders: date-stamped sketches with `index.html`, `sketch.js`, and any notes for that day.
-* `Flower_Arrangement/`: a standalone sketch kept for reference.
-* `p5_js/`: a minimal starter set of files I reuse when beginning a new idea.
-* `addons/`, `p5.js`, `p5.min.js`: local copies of the libraries required by the sketches.
-* `empty-example/`: the blank template I clone when I want a clean starting point.
+Each sketch is kept in its own folder so the process, experiments, and visual development can be tracked over time.
 
-## How to run
+## Overview
 
-1. Open a terminal inside the sketch folder you want to explore.
-2. Start a lightweight HTTP server (for example, `python -m http.server`).
-3. Visit the served `index.html` in your browser to view the sketch.
+This repository focuses on:
+
+* Generative art
+* p5.js sketches
+* WebGL experiments
+* Mathematical visual systems
+* Procedural animation
+* Shader-inspired effects
+* Daily creative coding practice
+
+## Directory Structure
+
+```txt
+.
+├── 2025xxxx/           # Date-stamped daily sketches
+├── Flower_Arrangement/ # Standalone reference sketch
+├── p5_js/              # Minimal starter files
+├── addons/             # Local p5.js add-ons
+├── p5.js               # Local p5.js library
+├── p5.min.js           # Minified p5.js library
+└── empty-example/      # Blank template for new sketches
+```
+
+## How to Run
+
+Because many sketches use local files, assets, or browser APIs, running them through a local server is recommended.
+
+1. Open a terminal inside the sketch folder you want to view.
+
+```bash
+cd 2025xxxx
+```
+
+2. Start a lightweight local server.
+
+```bash
+python -m http.server
+```
+
+3. Open the local URL in your browser.
+
+```txt
+http://localhost:8000
+```
 
 ## References
 
-If you want to dive deeper into p5.js, here are the resources I keep handy:  
-https://p5js.org/tutorials/get-started/  
-https://p5js.org/tutorials/  
-https://p5js.org/reference/  
-https://github.com/processing/p5.js/wiki/Local-server
+Useful p5.js resources:
+
+* [Getting Started with p5.js](https://p5js.org/tutorials/get-started/)
+* [p5.js Tutorials](https://p5js.org/tutorials/)
+* [p5.js Reference](https://p5js.org/reference/)
+* [p5.js Local Server Guide](https://github.com/processing/p5.js/wiki/Local-server)
 
 ## License
 
 The bundled p5.js libraries remain under the GNU Lesser General Public License, version 2.1.
+
+Sketches and original creative coding experiments in this repository are maintained by Rikiya Okawa.
