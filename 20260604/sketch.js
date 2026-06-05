@@ -124,18 +124,45 @@ function draw() {
 }
 
 // ─── Lissajous ────────────────────────────────────────────────────────────────
+// Accent colors match formula zone: amber = δ (phase), pink = b (y-freq)
+const COL_A = [255, 190,  50];  // amber — matches δ label
+const COL_B = [255,  70, 150];  // pink  — matches b label
+const COL_C = [ 80, 220, 255];  // cyan accent
+
+function lerpColor3(cA, cB, t) {
+  return [
+    cA[0] + (cB[0] - cA[0]) * t,
+    cA[1] + (cB[1] - cA[1]) * t,
+    cA[2] + (cB[2] - cA[2]) * t,
+  ];
+}
+
 function drawLissajousPoint(a, b, delta) {
   const STEPS = 720;
-  pg.stroke(255, 255, 255, 12);
   pg.strokeWeight(0.6);
   pg.noFill();
-  pg.beginShape();
+
+  // Pre-compute all vertices
+  const xs = new Float32Array(STEPS + 1);
+  const ys = new Float32Array(STEPS + 1);
   for (let i = 0; i <= STEPS; i++) {
     const tt = (i / STEPS) * TAU;
-    pg.vertex(SIM_CX + SIM_R * Math.sin(a * tt + delta),
-              SIM_CY + SIM_R * Math.sin(b * tt));
+    xs[i] = SIM_CX + SIM_R * Math.sin(a * tt + delta);
+    ys[i] = SIM_CY + SIM_R * Math.sin(b * tt);
   }
-  pg.endShape();
+
+  // Draw segments with color interpolated amber → white → pink
+  for (let i = 0; i < STEPS; i++) {
+    const t = i / (STEPS - 1);
+    let r, g, bl;
+    if (t < 0.5) {
+      [r, g, bl] = lerpColor3(COL_A, [255, 255, 255], t * 2);
+    } else {
+      [r, g, bl] = lerpColor3([255, 255, 255], COL_B, (t - 0.5) * 2);
+    }
+    pg.stroke(r, g, bl, 12);
+    pg.line(xs[i], ys[i], xs[i + 1], ys[i + 1]);
+  }
 
   const cx = SIM_CX + SIM_R * Math.sin(a * delta + delta);
   const cy = SIM_CY + SIM_R * Math.sin(b * delta);
@@ -351,6 +378,9 @@ function startRecording() {
   encoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => { console.error(e); isRecording = false; setStatus('Error', '#f44'); } });
   encoder.configure({ codec: 'avc1.640028', width: W, height: H, bitrate: 18_000_000, framerate: FPS });
   recFrameCount = 0; isRecording = true;
+  frameCount = 0;
+  pg.background(0); glowPg.background(0);
+  prevX = null; prevY = null;
   const el = id => document.getElementById(id);
   if (el('startBtn')) el('startBtn').disabled = true;
   if (el('stopBtn'))  el('stopBtn').disabled  = false;
