@@ -20,10 +20,10 @@ const SIM_R       = 440;
 const RATIOS = [
   { a: 1, b: 1, label: '1 : 1' },
   { a: 1, b: 2, label: '1 : 2' },
-  { a: 2, b: 3, label: '2 : 3' },
-  { a: 3, b: 4, label: '3 : 4' },
-  { a: 3, b: 5, label: '3 : 5' },
-  { a: 5, b: 6, label: '5 : 6' },
+  { a: 1, b: 3, label: '1 : 3' },
+  { a: 1, b: 4, label: '1 : 4' },
+  { a: 1, b: 5, label: '1 : 5' },
+  { a: 1, b: 6, label: '1 : 6' },
 ];
 const RATIO_FRAMES = FPS * 5;
 const TOTAL_LOOP   = RATIO_FRAMES * RATIOS.length;
