@@ -31,14 +31,14 @@ const RING_POINTS = 5;
 const TOTAL_POINTS = POINT_COUNT * RING_POINTS;
 const CAMERA_ORBIT_RATE = 0.18;
 const LOCAL_ROTATE_RATE = 0.02;
-const CLOUD_VIEW_SCALE = 0.58;
+const CLOUD_VIEW_SCALE = 0.42;
 
 // ─── Point-cloud cache ────────────────────────────────────────────────────────
 let cachedPresetIndex = -1;
 let cachedCloud = null;
 
 // ─── Buffers ──────────────────────────────────────────────────────────────────
-let overlayPg, grainPg;
+let overlayPg, grainPg, simPg;
 let canvasEl = null;
 
 // ─── Recording ────────────────────────────────────────────────────────────────
@@ -63,6 +63,10 @@ function setup() {
   overlayPg = createGraphics(W, H);
   overlayPg.pixelDensity(1);
   overlayPg.colorMode(RGB, 255, 255, 255, 255);
+
+  simPg = createGraphics(W, SIM_H, WEBGL);
+  simPg.pixelDensity(1);
+  simPg.colorMode(RGB, 255, 255, 255, 255);
 
   grainPg = createGraphics(W, H);
   grainPg.pixelDensity(1);
@@ -225,14 +229,14 @@ function getCurrentPresetTiming() {
   };
 }
 
-function setupSimulationCamera(timing) {
+function setupSimulationCamera(timing, pg) {
   const orbitAngle = timing.localProgress * TAU * CAMERA_ORBIT_RATE;
   const cameraRadius = 980;
   const cameraX = Math.sin(orbitAngle) * cameraRadius;
   const cameraZ = Math.cos(orbitAngle) * cameraRadius;
   const cameraY = -64 + Math.sin(orbitAngle * 2.0) * 28;
-  perspective(PI / 6.4, W / H, 10, 4000);
-  camera(cameraX, cameraY, cameraZ, 0, 0, 0, 0, 1, 0);
+  pg.perspective(PI / 6.4, W / SIM_H, 10, 6000);
+  pg.camera(cameraX, cameraY, cameraZ, 0, 0, 0, 0, 1, 0);
 }
 
 function resetScreenCamera() {
@@ -245,14 +249,17 @@ function resetScreenCamera() {
 function draw() {
   const timing = getCurrentPresetTiming();
 
-  background(0);
-  push();
-  setupSimulationCamera(timing);
-  translate(0, SIM_CENTER_Y - H / 2, 0);
-  drawPointCloud(timing);
-  pop();
+  // Render point cloud into dedicated WEBGL buffer (origin = its own center)
+  simPg.clear();
+  simPg.push();
+  setupSimulationCamera(timing, simPg);
+  drawPointCloud(timing, simPg);
+  simPg.pop();
 
+  // Composite onto main canvas
+  background(0);
   resetScreenCamera();
+  image(simPg, -W / 2, FORMULA_H - H / 2, W, SIM_H);
   drawScreenOverlay(timing);
 
   if (isRecording) {
@@ -263,50 +270,50 @@ function draw() {
   }
 }
 
-function drawPointCloud(timing) {
+function drawPointCloud(timing, pg) {
   const cloud = getPointCloud(timing.preset, timing.presetIndex);
   const revealProgress = constrain(timing.localProgress * 1.15, 0, 1);
   const tracerIndex = Math.min(POINT_COUNT - 1, Math.floor(timing.localProgress * (POINT_COUNT - 1)));
   const breathe = CLOUD_VIEW_SCALE * (1.0 + 0.018 * Math.sin(timing.phase));
 
-  push();
-  rotateX(-0.25);
-  rotateY(timing.localProgress * TAU * LOCAL_ROTATE_RATE);
-  rotateZ(Math.sin(timing.phase) * 0.018);
-  blendMode(ADD);
+  pg.push();
+  pg.rotateX(-0.25);
+  pg.rotateY(timing.localProgress * TAU * LOCAL_ROTATE_RATE);
+  pg.rotateZ(Math.sin(timing.phase) * 0.018);
+  pg.blendMode(ADD);
 
-  renderCloudPass(cloud, revealProgress, breathe, 2.4, 0.95, true);
-  renderCloudPass(cloud, revealProgress, breathe, 1.55, 1.0, false);
-  drawTracer(cloud, tracerIndex, breathe, timing.phase);
+  renderCloudPass(pg, cloud, revealProgress, breathe, 2.4, 0.95, true);
+  renderCloudPass(pg, cloud, revealProgress, breathe, 1.55, 1.0, false);
+  drawTracer(pg, cloud, tracerIndex, breathe, timing.phase);
 
-  blendMode(BLEND);
-  pop();
+  pg.blendMode(BLEND);
+  pg.pop();
 }
 
-function renderCloudPass(cloud, revealProgress, breathe, sizeMul, alphaMul, isGlow) {
+function renderCloudPass(pg, cloud, revealProgress, breathe, sizeMul, alphaMul, isGlow) {
   const maxIndex = Math.min(cloud.count, Math.floor(cloud.count * revealProgress));
   for (let group = 0; group < 3; group++) {
     const baseWeight = isGlow ? 3.2 + group * 1.2 : 1.55 + group * 0.72;
-    strokeWeight(baseWeight * sizeMul);
-    beginShape(POINTS);
+    pg.strokeWeight(baseWeight * sizeMul);
+    pg.beginShape(POINTS);
     for (let i = group; i < maxIndex; i += 3) {
       const depthPulse = Math.sin(cloud.progress[i] * TAU * 4.0) * 4.0;
       const r = cloud.colors[i * 3];
       const g = cloud.colors[i * 3 + 1];
       const b = cloud.colors[i * 3 + 2];
       const alphaBase = isGlow ? 48 : 145 + cloud.depth[i] * 95;
-      stroke(r, g, b, alphaBase * alphaMul);
-      vertex(
+      pg.stroke(r, g, b, alphaBase * alphaMul);
+      pg.vertex(
         cloud.positions[i * 3] * breathe,
         cloud.positions[i * 3 + 1] * breathe,
         cloud.positions[i * 3 + 2] * breathe + depthPulse
       );
     }
-    endShape();
+    pg.endShape();
   }
 }
 
-function drawTracer(cloud, tracerIndex, breathe, phase) {
+function drawTracer(pg, cloud, tracerIndex, breathe, phase) {
   const tailCount = 54;
   for (let t = tailCount; t >= 1; t--) {
     const idx = Math.max(0, tracerIndex - t);
@@ -314,23 +321,23 @@ function drawTracer(cloud, tracerIndex, breathe, phase) {
     const x = cloud.curvePositions[idx * 3] * breathe;
     const y = cloud.curvePositions[idx * 3 + 1] * breathe;
     const z = cloud.curvePositions[idx * 3 + 2] * breathe + Math.sin(idx / POINT_COUNT * TAU * 4.0 + phase) * 4.0;
-    strokeWeight(3.2 + k * 3.4);
-    stroke(225, 248, 255, 70 + k * 170);
-    point(x, y, z);
+    pg.strokeWeight(3.2 + k * 3.4);
+    pg.stroke(225, 248, 255, 70 + k * 170);
+    pg.point(x, y, z);
   }
 
   const x = cloud.curvePositions[tracerIndex * 3] * breathe;
   const y = cloud.curvePositions[tracerIndex * 3 + 1] * breathe;
   const z = cloud.curvePositions[tracerIndex * 3 + 2] * breathe;
-  strokeWeight(22);
-  stroke(80, 220, 255, 82);
-  point(x, y, z);
-  strokeWeight(14);
-  stroke(255, 190, 50, 84);
-  point(x, y, z);
-  strokeWeight(9.5);
-  stroke(255, 255, 255, 245);
-  point(x, y, z);
+  pg.strokeWeight(22);
+  pg.stroke(80, 220, 255, 82);
+  pg.point(x, y, z);
+  pg.strokeWeight(14);
+  pg.stroke(255, 190, 50, 84);
+  pg.point(x, y, z);
+  pg.strokeWeight(9.5);
+  pg.stroke(255, 255, 255, 245);
+  pg.point(x, y, z);
 }
 
 // ─── Formula zone ────────────────────────────────────────────────────────────
