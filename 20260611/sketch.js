@@ -17,8 +17,8 @@ const INK_R = 255, INK_G = 255, INK_B = 255;
 
 // ─── Artwork parameters ──────────────────────────────────────────────────────
 const PARAMS = {
-  lineThickness: 1.38,
-  glowStrength: 0.90,
+  lineThickness: 1.60,
+  glowStrength: 1.15,
   animationSpeed: 1.0,
 };
 
@@ -36,21 +36,21 @@ const ROLLE = {
   C_REFERENCE: 0.0,       // for the pure even arch (h2=h3=0), f'(0)=0 exactly
   AMPLITUDE: 400,         // vertical scale of f in pixels
   SPAN_X: W * 0.60,       // curve scale: pixel width of [a, b]
-  DEPTH_LAYERS: 7,        // depth: echo copies offset along z
-  LAYER_SPACING: 78,
-  CURVE_SAMPLES: 220,     // point count along the curve
+  DEPTH_LAYERS: 9,        // depth: echo copies offset along z
+  LAYER_SPACING: 68,
+  CURVE_SAMPLES: 280,     // point count along the curve
   CHUNK: 20,              // samples per constant-alpha stroke chunk
-  PARTICLE_COUNT: 160,    // particles flowing from a to b
-  CLUSTER_COUNT: 70,      // dense halo around c
-  CURTAIN_STEP: 3,        // plumb-line veil: one line every Nth sample
-  DUST_COUNT: 180,        // ambient dust field for spatial depth
-  TAIL_STEPS: 5,          // comet-tail segments per flow particle
-  TAIL_DS: 0.0085,        // tail spacing in curve-parameter units
+  PARTICLE_COUNT: 220,    // particles flowing from a to b
+  CLUSTER_COUNT: 100,     // dense halo around c
+  CURTAIN_STEP: 2,        // plumb-line veil: one line every Nth sample
+  DUST_COUNT: 260,        // ambient dust field for spatial depth
+  TAIL_STEPS: 9,          // comet-tail segments per flow particle
+  TAIL_DS: 0.0065,        // tail spacing in curve-parameter units
   ROTATION_SPEED: 1,      // camera revolutions per 30 s loop (integer → seamless)
-  CAM_RADIUS: 1650,
+  CAM_RADIUS: 1550,
   CAM_FOV: 1.0,
-  FOG_NEAR: 1100,
-  FOG_FAR: 3400,
+  FOG_NEAR: 600,
+  FOG_FAR: 3800,
 };
 const HALF_SPAN = ROLLE.SPAN_X * 0.5;
 
@@ -58,6 +58,7 @@ let pg;        // crisp line pass (WEBGL)
 let glowPg;    // soft glow pass (WEBGL)
 let halfPg;    // half-res scratch for blurred glow
 let quartPg;   // quarter-res scratch for the wide outer bloom
+let eighthPg;  // eighth-res for ultra-wide atmospheric haze
 let grainPg;   // baked film grain, composited once per frame
 let canvasEl = null;
 
@@ -68,6 +69,7 @@ let lastCps = [];                    // critical points found this frame
 let camEye = { x: 0, y: 0, z: 0 };
 let camYaw = 0;
 let currentSeed = 0;
+let breath = 1.0;                    // global slow pulse, 0.82–1.0
 
 // ─── Recording ────────────────────────────────────────────────────────────────
 let muxer = null, encoder = null;
@@ -98,6 +100,11 @@ function setup() {
   quartPg = createGraphics(W >> 2, H >> 2);
   quartPg.pixelDensity(1);
   quartPg.colorMode(RGB, 255, 255, 255, 255);
+
+  // Eighth-res buffer: ultra-wide atmospheric haze, barely-there luminosity.
+  eighthPg = createGraphics(W >> 3, H >> 3);
+  eighthPg.pixelDensity(1);
+  eighthPg.colorMode(RGB, 255, 255, 255, 255);
 
   grainPg = createGraphics(W, H);
   grainPg.pixelDensity(1);
@@ -169,11 +176,19 @@ function bakeParticleSeeds() {
 function bakeGrain() {
   grainPg.clear();
   grainPg.noStroke();
-  const count = floor(W * H * 0.0014);
+  // Fine base grain
+  const count = floor(W * H * 0.0018);
   for (let i = 0; i < count; i++) {
-    const v = random(100, 200);
-    grainPg.fill(v, v, v, random(2, 7));
-    grainPg.circle(random(W), random(H), random(0.22, 0.85));
+    const v = random(100, 210);
+    grainPg.fill(v, v, v, random(2, 8));
+    grainPg.circle(random(W), random(H), random(0.18, 0.90));
+  }
+  // Sparse bright specks — micro starfield
+  const sparks = floor(W * H * 0.00004);
+  for (let i = 0; i < sparks; i++) {
+    const v = random(200, 255);
+    grainPg.fill(v, v, v, random(14, 38));
+    grainPg.circle(random(W), random(H), random(0.5, 1.4));
   }
 }
 
@@ -182,9 +197,9 @@ function bakeGrain() {
 // returns to its exact starting shape at the loop boundary.
 function rolleHarmonics(ph) {
   return {
-    h1: 1.0 + 0.10 * Math.sin(2 * ph),   // even arch (dominant, keeps f readable)
-    h2: 0.55 * Math.sin(ph),             // odd tilt
-    h3: 0.14 * Math.cos(3 * ph),         // fine ripple
+    h1: 1.0 + 0.12 * Math.sin(2 * ph),   // even arch (dominant, keeps f readable)
+    h2: 0.60 * Math.sin(ph),             // odd tilt
+    h3: 0.18 * Math.cos(3 * ph) + 0.06 * Math.sin(4 * ph),  // richer fine ripple
   };
 }
 
@@ -249,8 +264,10 @@ function worldY(f) { return -f; }   // positive f renders upward (p5 y-down)
 function fogFactor(x, y, z) {
   const dx = x - camEye.x, dy = y - camEye.y, dz = z - camEye.z;
   const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  const k = (d - ROLLE.FOG_NEAR) / (ROLLE.FOG_FAR - ROLLE.FOG_NEAR);
-  return Math.max(0.10, Math.min(1, 1 - k * 0.90));
+  const k = Math.max(0, Math.min(1, (d - ROLLE.FOG_NEAR) / (ROLLE.FOG_FAR - ROLLE.FOG_NEAR)));
+  // Smoothstep so fog has no hard knee — elements ease in/out rather than pop
+  const s = k * k * (3 - 2 * k);
+  return Math.max(0, 1 - s);
 }
 
 // ─── Draw ─────────────────────────────────────────────────────────────────────
@@ -273,6 +290,8 @@ function draw() {
 
 function renderFrame(loop) {
   const phase = loop * TAU * PARAMS.animationSpeed;
+  // Slow inhale/exhale: 2 full cycles per loop (integer → seamless)
+  breath = 0.86 + 0.14 * Math.sin(2 * phase - Math.PI * 0.5);
   lastCps = findCriticalPoints(phase);
 
   pg.clear();
@@ -301,14 +320,14 @@ function prepBuffer(g, phase) {
 // Slow orbital camera: exactly ROTATION_SPEED (integer) revolutions per loop.
 function applyCamera(g, ph) {
   camYaw = ph * ROLLE.ROTATION_SPEED;
-  const r  = ROLLE.CAM_RADIUS + 110 * Math.sin(2 * ph);
+  const r  = ROLLE.CAM_RADIUS * 0.68 + 130 * Math.sin(2 * ph);
   const cy = -190;
-  const ey = cy - 210 + 120 * Math.sin(ph);
+  const ey = cy - 260 + 175 * Math.sin(ph) + 40 * Math.sin(3 * ph);
   camEye.x = Math.sin(camYaw) * r;
   camEye.y = ey;
   camEye.z = Math.cos(camYaw) * r;
   g.perspective(ROLLE.CAM_FOV, W / H, 10, 9000);
-  g.camera(camEye.x, camEye.y, camEye.z, 0, cy + 24 * Math.sin(2 * ph), 0, 0, 1, 0);
+  g.camera(camEye.x, camEye.y, camEye.z, 0, cy + 38 * Math.sin(2 * ph), 0, 0, 1, 0);
 }
 
 // Composite: bg -> blurred glow (screen) -> sharp lines (screen) -> grain.
@@ -319,18 +338,23 @@ function composite() {
   halfPg.image(glowPg, 0, 0, W >> 1, H >> 1);
   quartPg.clear();
   quartPg.image(halfPg, 0, 0, W >> 2, H >> 2);
+  eighthPg.clear();
+  eighthPg.image(quartPg, 0, 0, W >> 3, H >> 3);
 
   drawingContext.globalCompositeOperation = 'screen';
-  tint(255, 165);                    // wide, faint outer halo
+  tint(255, Math.round(80 * breath));   // ultra-wide atmospheric haze
+  image(eighthPg, 0, 0, W, H);
+  tint(255, Math.round(148 * breath));  // wide, faint outer halo
   image(quartPg, 0, 0, W, H);
+  tint(255, Math.round(230 * breath));  // tight inner glow
+  image(halfPg, 0, 0, W, H);
   noTint();
-  image(halfPg, 0, 0, W, H);         // tight inner glow
   image(pg, 0, 0);
   drawingContext.globalCompositeOperation = 'source-over';
 
   push();
   drawingContext.globalCompositeOperation = 'screen';
-  tint(255, 9);
+  tint(255, 16);
   image(grainPg, 0, 0);
   noTint();
   drawingContext.globalCompositeOperation = 'source-over';
@@ -395,8 +419,9 @@ function drawDust(g, ph, isGlow) {
   for (let i = 0; i < dustSeeds.length; i += stride) {
     const d = dustSeeds[i];
     const fog = fogFactor(d.x, d.y, d.z);
-    const tw = 0.55 + 0.45 * Math.sin(d.twk * ph + d.tw);
-    billboardDot(g, d.x, d.y, d.z, d.size * (isGlow ? 3.0 : 1), (isGlow ? 5 : 26) * tw * fog, isGlow);
+    const twRaw = 0.5 + 0.5 * Math.sin(d.twk * ph + d.tw);
+    const tw = 0.30 + 0.70 * twRaw * twRaw;   // squared → softer peaks, no hard flash
+    billboardDot(g, d.x, d.y, d.z, d.size * (isGlow ? 3.2 : 1), (isGlow ? 6 : 32) * tw * fog * breath, isGlow);
   }
   g.pop();
 }
@@ -406,11 +431,13 @@ function drawDust(g, ph, isGlow) {
 // a falling veil. Taller curve → brighter thread, so the veil itself reads
 // the function's height.
 function drawCurtain(g, ph, isGlow) {
-  const zs = isGlow ? [0] : [0, -ROLLE.LAYER_SPACING, ROLLE.LAYER_SPACING];
+  const zs = isGlow ? [0] : [0, -ROLLE.LAYER_SPACING, ROLLE.LAYER_SPACING,
+                                  -ROLLE.LAYER_SPACING * 2, ROLLE.LAYER_SPACING * 2];
   g.push();
   for (const zi of zs) {
-    const ampScale = zi === 0 ? 1 : 0.84;
-    const sideW = zi === 0 ? 1 : 0.5;
+    const isCenter = zi === 0;
+    const ampScale = isCenter ? 1 : Math.max(0.55, 1 - Math.abs(zi) / (ROLLE.LAYER_SPACING * 3));
+    const sideW = isCenter ? 1 : Math.max(0.25, 0.7 - Math.abs(zi) / (ROLLE.LAYER_SPACING * 4));
     for (let i = 0; i <= ROLLE.CURVE_SAMPLES; i += ROLLE.CURTAIN_STEP) {
       const u = -1 + 2 * i / ROLLE.CURVE_SAMPLES;
       const fv = rolleFunction(u, ph) * ampScale;
@@ -418,7 +445,9 @@ function drawCurtain(g, ph, isGlow) {
       const x = worldX(u);
       const hN = Math.abs(fv) / ROLLE.AMPLITUDE;
       const fog = fogFactor(x, worldY(fv) * 0.5, zi);
-      applyStroke(g, isGlow, (isGlow ? 4 : 14) * (0.35 + 0.65 * hN) * sideW * fog, 0.5);
+      // Height²  weighting concentrates glow near the crest
+      const hW = 0.28 + 0.72 * hN * hN;
+      applyStroke(g, isGlow, (isGlow ? 6 : 18) * hW * sideW * fog * breath, 0.55);
       g.line(x, 0, zi, x, worldY(fv), zi);
     }
   }
@@ -477,7 +506,7 @@ function drawCurve(g, ph, isGlow) {
       const fog = fogFactor(worldX(um), worldY(fm) * ampScale, z);
       // Crest weighting: the curve brightens toward its extrema, leading the
       // eye to where the horizontal tangents live.
-      const crest = 0.72 + 0.50 * Math.abs(fm) / ROLLE.AMPLITUDE;
+      const crest = 0.60 + 0.80 * Math.abs(fm) / ROLLE.AMPLITUDE;
       applyStroke(g, isGlow, baseA * layerW * crest * fog, weight);
       g.beginShape();
       for (let i = c0; i <= c1; i++) {
@@ -503,11 +532,23 @@ function drawEndpoints(g, ph, isGlow) {
     const pulse = 0.86 + 0.14 * Math.sin(4 * ph + (u < 0 ? 0 : Math.PI));
 
     billboardRing(g, x, y, 0, 30 * pulse, (isGlow ? 18 : 120) * fog, 1.0, isGlow);
-    billboardRing(g, x, y, 0, 48 * pulse, (isGlow ? 10 : 58) * fog, 0.7, isGlow);
-    billboardDot(g, x, y, 0, isGlow ? 16 : 6.5, (isGlow ? 20 : 170) * fog, isGlow);
+    billboardRing(g, x, y, 0, 52 * pulse, (isGlow ? 10 : 58) * fog, 0.65, isGlow);
+    billboardRing(g, x, y, 0, 80 * pulse, (isGlow ? 5 : 28) * fog, 0.45, isGlow);
+    billboardDot(g, x, y, 0, isGlow ? 20 : 7, (isGlow ? 26 : 200) * fog, isGlow);
+
+    // Cross-flare: four radiating spokes for a starburst anchor
+    g.push();
+    g.translate(x, y, 0);
+    g.rotateY(camYaw);
+    const spikeLen = 36 * pulse;
+    const spikeA = (isGlow ? 22 : 130) * fog;
+    applyStroke(g, isGlow, spikeA, 0.8);
+    g.line(0, -spikeLen, 0, 0, spikeLen, 0);
+    g.line(-spikeLen * 0.7, 0, 0, spikeLen * 0.7, 0, 0);
+    g.pop();
 
     applyStroke(g, isGlow, (isGlow ? 9 : 52) * fog, 0.7);
-    g.line(x, y + 14, 0, x, y + 44, 0);
+    g.line(x, y + 14, 0, x, y + 54, 0);
   }
   g.pop();
 }
@@ -531,13 +572,14 @@ function drawCriticalPoint(g, ph, isGlow) {
     billboardDot(g, cp.x, cp.y, 0, (isGlow ? 24 : 10) * pulse, (isGlow ? 26 : 225) * w * fog, isGlow);
 
     // Expanding ripples: 2 integer cycles per loop → seamless wrap.
-    // Cubic ease-out makes each ring bloom fast then drift, like water.
-    for (const r0 of [0, 1 / 3, 2 / 3]) {
-      const prog = ((ph / TAU) * 2 + r0 + k * 0.25) % 1;
+    // fadeIn ramps alpha from 0 at birth so rings never pop into view.
+    for (const r0 of [0, 1 / 4, 2 / 4, 3 / 4]) {
+      const prog = ((ph / TAU) * 2 + r0 + k * 0.18) % 1;
       const eased = 1 - Math.pow(1 - prog, 3);
-      const rad = 14 + eased * 150 * w;
-      const fade = Math.pow(1 - prog, 1.5);
-      billboardRing(g, cp.x, cp.y, 0, rad, fade * (isGlow ? 13 : 76) * w * fog, 0.8, isGlow);
+      const rad = eased * 220 * w;
+      const fadeIn  = Math.min(1, prog / 0.06);        // 0→1 over first 6% of life
+      const fadeOut = Math.pow(1 - prog, 1.2);
+      billboardRing(g, cp.x, cp.y, 0, rad, fadeIn * fadeOut * (isGlow ? 18 : 90) * w * fog, 0.75, isGlow);
     }
   });
   g.pop();
@@ -554,16 +596,28 @@ function drawTangentLine(g, ph, isGlow) {
   lastCps.forEach((cp, k) => {
     const w = 0.30 + 0.70 * Math.abs(cp.f) / maxAbs;
     const fog = fogFactor(cp.x, cp.y, 0);
-    const len = (128 + 38 * Math.sin(3 * ph + k)) * w;
+    const len = (200 + 60 * Math.sin(3 * ph + k)) * w;
 
-    // Light blade: brightness peaks at c and breathes out to soft ends —
-    // still a single horizontal line (slope 0 = f'(c) = 0 throughout).
-    const SEGS = 10;
+    // Light blade in z=0 plane: brightness peaks at c, breathes out to soft ends.
+    const SEGS = 16;
     for (let si = 0; si < SEGS; si++) {
       const t0 = si / SEGS, t1 = (si + 1) / SEGS;
-      const fall = Math.pow(Math.sin(Math.PI * (t0 + t1) * 0.5), 1.5);
-      applyStroke(g, isGlow, (isGlow ? 30 : 190) * w * fog * fall, 1.3);
+      const fall = Math.pow(Math.sin(Math.PI * (t0 + t1) * 0.5), 1.2);
+      applyStroke(g, isGlow, (isGlow ? 46 : 230) * w * fog * fall * breath, 1.6);
       g.line(cp.x - len + 2 * len * t0, cp.y, 0, cp.x - len + 2 * len * t1, cp.y, 0);
+    }
+
+    // Ghost tangent blades at ±z layers — turns the line into a glowing plane
+    const zr = (ROLLE.DEPTH_LAYERS - 1) / 2 * ROLLE.LAYER_SPACING;
+    for (const zi of [-zr * 0.55, zr * 0.55]) {
+      const zFog = fogFactor(cp.x, cp.y, zi);
+      const zLen = len * 0.65;
+      for (let si = 0; si < 8; si++) {
+        const t0 = si / 8, t1 = (si + 1) / 8;
+        const fall = Math.pow(Math.sin(Math.PI * (t0 + t1) * 0.5), 1.5);
+        applyStroke(g, isGlow, (isGlow ? 18 : 90) * w * zFog * fall, 0.9);
+        g.line(cp.x - zLen + 2 * zLen * t0, cp.y, zi, cp.x - zLen + 2 * zLen * t1, cp.y, zi);
+      }
     }
   });
   g.pop();
@@ -581,12 +635,12 @@ function drawParticles(g, ph, isGlow) {
     const s = (((p.off + (ph / TAU) * p.cycles) % 1) + 1) % 1;
     const u = -1 + 2 * s;
     const fade = Math.sin(Math.PI * s);
-    const jy = 7 * Math.sin(2 * ph + p.jPhase);
-    const z = p.z * (1 + 0.2 * Math.sin(2 * ph + p.jPhase));
+    const jy = 7 * Math.sin(2 * ph + p.jPhase) * fade;   // fade to 0 at endpoints
+    const z = p.z * (1 + 0.2 * Math.sin(2 * ph + p.jPhase)) * fade;
     const x = worldX(u);
     const y = worldY(rolleFunction(u, ph)) + jy;
     const fog = fogFactor(x, y, z);
-    billboardDot(g, x, y, z, p.size * (isGlow ? 3.4 : 1), (isGlow ? 14 : 110) * fade * fog, isGlow);
+    billboardDot(g, x, y, z, p.size * (isGlow ? 4.2 : 1), (isGlow ? 20 : 140) * fade * fog, isGlow);
 
     if (!isGlow) {
       let px = x, py = y;
@@ -596,11 +650,24 @@ function drawParticles(g, ph, isGlow) {
         const tx = worldX(u2);
         const ty = worldY(rolleFunction(u2, ph)) + jy;
         const tFade = Math.sin(Math.PI * s2) * (1 - k / (ROLLE.TAIL_STEPS + 1));
-        applyStroke(g, isGlow, 64 * tFade * fog, 0.6);
+        applyStroke(g, isGlow, 88 * tFade * fog, 0.7);
         g.line(px, py, z, tx, ty, z);
         px = tx; py = ty;
       }
     }
+  }
+
+  // Static wave dots: always-on points evenly spaced along the curve.
+  const WAVE_DOTS = 48;
+  for (let i = 0; i <= WAVE_DOTS; i++) {
+    const u = -1 + 2 * i / WAVE_DOTS;
+    const x = worldX(u);
+    const y = worldY(rolleFunction(u, ph));
+    const fog = fogFactor(x, y, 0);
+    // Slightly brighter near crest for visual interest
+    const crest = 0.5 + 0.5 * Math.abs(rolleFunction(u, ph)) / ROLLE.AMPLITUDE;
+    billboardDot(g, x, y, 0, isGlow ? 5 : 2.2,
+      (isGlow ? 14 : 90) * crest * fog * breath, isGlow);
   }
 
   // Halo cluster: dense region following the dominant critical point c.
@@ -616,8 +683,8 @@ function drawParticles(g, ph, isGlow) {
       const pz = Math.cos(ang) * r * rz;
       const nearW = 1 - Math.min(1, r / 150);
       const fog = fogFactor(px, py, pz);
-      billboardDot(g, px, py, pz, cs.size * (isGlow ? 3.2 : 1),
-        (isGlow ? 16 : 120) * (0.25 + 0.75 * nearW) * fog, isGlow);
+      billboardDot(g, px, py, pz, cs.size * (isGlow ? 4.0 : 1),
+        (isGlow ? 22 : 145) * (0.25 + 0.75 * nearW) * fog, isGlow);
     }
   }
   g.pop();
@@ -638,12 +705,12 @@ function drawHUD(loop) {
   text('a=' + ROLLE.A_END.toFixed(3) + '  b=' + ROLLE.B_END.toFixed(3)
     + '  f(a)=f(b)=0.000  c=' + (dom ? dom.u.toFixed(3) : '—')
     + "  f'(c)=0  loop=" + loop.toFixed(3), 52, 76);
-  fill(255, 255, 255, 45);
+  fill(255, 255, 255, 50);
   textSize(10);
   textAlign(LEFT, BOTTOM);
-  text(W + '×' + H + ' · ' + FPS + 'fps', 52, H - 52);
+  text(W + '×' + H + ' · ' + FPS + ' fps', 52, H - 52);
   textAlign(RIGHT, BOTTOM);
-  text("20260611 · ROLLE'S THEOREM · B&W", W - 52, H - 52);
+  text("20260611 · ROLLE'S THEOREM", W - 52, H - 52);
   pop();
 }
 
@@ -665,11 +732,11 @@ function drawCornerBrackets() {
 function drawVignette() {
   push();
   noFill();
-  const steps = 70, maxR = dist(W / 2, H / 2, 0, 0) * 1.10;
+  const steps = 80, maxR = dist(W / 2, H / 2, 0, 0) * 1.12;
   strokeWeight((maxR / steps) * 2 + 2);
   for (let i = 0; i < steps; i++) {
     const k = i / (steps - 1);
-    const a = map(k, 0.72, 1.0, 0, 115, true);
+    const a = map(k, 0.62, 1.0, 0, 145, true);
     if (a <= 0) continue;
     stroke(0, 0, 0, a);
     circle(W / 2, H / 2, lerp(0, maxR, k) * 2);
