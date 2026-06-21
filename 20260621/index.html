@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Newton's Method Field</title>
+  <link rel="icon" href="data:," />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #06060a;
+      color: #fff;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px 48px;
+      min-height: 100vh;
+    }
+
+    #canvas-wrap canvas {
+      width: min(540px, 100vw) !important;
+      height: auto !important;
+      display: block;
+    }
+
+    #controls {
+      width: min(540px, 100%);
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .ctrl-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    button {
+      flex: 1;
+      padding: 11px 0;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.06);
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover:not(:disabled) { background: rgba(255,255,255,0.13); }
+    button:disabled { opacity: 0.35; cursor: default; }
+
+    #status-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: rgba(255,255,255,0.35);
+      padding: 0 2px;
+    }
+    #status { color: rgba(255,255,255,0.7); }
+
+    #export-progress {
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #progressFill {
+      height: 100%;
+      background: #fff;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+
+    #hint {
+      font-size: 11px;
+      color: rgba(255,255,255,0.2);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="canvas-wrap"></div>
+
+  <div id="controls">
+    <div class="ctrl-row">
+      <button id="startBtn">⏺ Record MP4</button>
+      <button id="stopBtn" disabled>⏹ Stop</button>
+      <button id="pngBtn">⬇ PNG</button>
+    </div>
+    <div id="export-progress"><div id="progressFill"></div></div>
+    <div id="status-row">
+      <span>Status: <span id="status">Ready</span></span>
+      <span>
+        <span id="duration">0.0</span>s / <span id="maxDuration"></span>s
+        · <span id="frameCount">0</span> / <span id="maxFrames"></span> frames
+      </span>
+    </div>
+    <div id="hint">R = record · S = save PNG</div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@latest/build/mp4-muxer.js"></script>
+  <script src="sketch.js"></script>
+  <script>
+    window.addEventListener('load', () => {
+      document.getElementById('startBtn').addEventListener('click', () => window.startRecording());
+      document.getElementById('stopBtn').addEventListener('click',  () => window.stopRecording());
+      document.getElementById('pngBtn').addEventListener('click',   () => saveCanvas('newtons_method_field_' + window.ts(), 'png'));
+    });
+  </script>
+</body>
+</html>
