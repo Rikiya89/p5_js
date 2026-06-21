@@ -41,7 +41,7 @@ const NEWTON = {
 let paths = [];
 
 // ─── Buffers ──────────────────────────────────────────────────────────────────
-let pg, glowPg, halfPg, quartPg, grainPg;
+let pg, glowPg, halfPg, quartPg, grainPg, overlayPg;
 let canvasEl = null;
 
 // ─── Recording ────────────────────────────────────────────────────────────────
@@ -50,6 +50,10 @@ let isRecording = false, recFrameCount = 0;
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 function setup() {
+  if (typeof setAttributes === 'function') {
+    setAttributes({ alpha: false, antialias: true, preserveDrawingBuffer: true });
+  }
+
   const cnv = createCanvas(W, H);
   canvasEl = cnv.elt;
   pixelDensity(1);
@@ -59,11 +63,11 @@ function setup() {
   const wrap = document.getElementById('canvas-wrap');
   if (wrap) wrap.appendChild(canvasEl);
 
-  pg = createGraphics(W, H);
+  pg = createGraphics(W, H, WEBGL);
   pg.pixelDensity(1);
   pg.colorMode(RGB, 255, 255, 255, 255);
 
-  glowPg = createGraphics(W, H);
+  glowPg = createGraphics(W, H, WEBGL);
   glowPg.pixelDensity(1);
   glowPg.colorMode(RGB, 255, 255, 255, 255);
 
@@ -78,6 +82,10 @@ function setup() {
   grainPg = createGraphics(W, H);
   grainPg.pixelDensity(1);
   grainPg.colorMode(RGB, 255, 255, 255, 255);
+
+  overlayPg = createGraphics(W, H);
+  overlayPg.pixelDensity(1);
+  overlayPg.colorMode(RGB, 255, 255, 255, 255);
 
   bakeGrain();
   paths = NEWTON.starts.map((start, i) => buildNewtonPath(start, i));
@@ -182,11 +190,12 @@ function draw() {
 
   pg.clear();
   glowPg.clear();
+  overlayPg.clear();
   renderNewtonScene(loop, phase);
-  compositeFrame();
   drawFormulaZone(loop);
   drawDivider();
   drawVignette();
+  compositeFrame();
 
   if (isRecording) {
     captureFrame();
@@ -197,18 +206,39 @@ function draw() {
 }
 
 function renderNewtonScene(loop, phase) {
+  prepWebglLayer(glowPg, phase, true);
+  prepWebglLayer(pg, phase, false);
+
+  glowPg.push();
+  glowPg.translate(-W / 2, -H / 2, 0);
   drawAmbientField(glowPg, phase);
   drawSolutionField(glowPg, phase, true);
-  drawSolutionField(pg, phase, false);
   drawPlotFrame(glowPg, true);
-  drawPlotFrame(pg, false);
   drawFunctionCurve(glowPg, true);
-  drawFunctionCurve(pg, false);
   drawRootMarkers(glowPg, true);
-  drawRootMarkers(pg, false);
-
   for (const path of paths) drawNewtonPath(glowPg, path, loop, phase, true);
+  glowPg.pop();
+
+  pg.push();
+  pg.translate(-W / 2, -H / 2, 0);
+  drawSolutionField(pg, phase, false);
+  drawPlotFrame(pg, false);
+  drawFunctionCurve(pg, false);
+  drawRootMarkers(pg, false);
   for (const path of paths) drawNewtonPath(pg, path, loop, phase, false);
+  pg.pop();
+}
+
+function prepWebglLayer(g, phase, isGlow) {
+  const gl = g.drawingContext;
+  gl.disable(gl.DEPTH_TEST);
+  g.resetMatrix();
+  g.ortho(-W / 2, W / 2, -H / 2, H / 2, -2400, 2400);
+  const camX = Math.sin(phase * 0.5) * (isGlow ? 18 : 12);
+  const camY = -18 + Math.cos(phase) * (isGlow ? 10 : 7);
+  g.camera(camX, camY, 1040, 0, 0, 0, 0, 1, 0);
+  g.rotateX(-0.015 + Math.sin(phase) * 0.006);
+  g.rotateY(Math.sin(phase * 0.5) * 0.012);
 }
 
 function drawAmbientField(g, phase) {
@@ -527,7 +557,7 @@ function compositeFrame() {
   tint(255, 210);
   image(halfPg, 0, 0, W, H);
   noTint();
-  image(pg, 0, 0);
+  image(pg, 0, 0, W, H);
   drawingContext.globalCompositeOperation = 'source-over';
 
   push();
@@ -537,15 +567,17 @@ function compositeFrame() {
   noTint();
   drawingContext.globalCompositeOperation = 'source-over';
   pop();
+
+  image(overlayPg, 0, 0, W, H);
 }
 
 // ─── Formula zone ────────────────────────────────────────────────────────────
 function drawFormulaZone(loop) {
-  noStroke();
-  fill(6, 6, 10, 238);
-  rect(0, 0, W, FORMULA_H);
+  overlayPg.noStroke();
+  overlayPg.fill(6, 6, 10, 238);
+  overlayPg.rect(0, 0, W, FORMULA_H);
 
-  const ctx = drawingContext;
+  const ctx = overlayPg.drawingContext;
   const WHITE = 'rgba(255,255,255,0.86)';
   const DIM = 'rgba(255,255,255,0.42)';
   const AMBER = 'rgba(255,190,50,0.96)';
@@ -622,27 +654,27 @@ function drawFormulaZone(loop) {
 }
 
 function drawDivider() {
-  push();
-  stroke(255, 255, 255, 24);
-  strokeWeight(1);
-  line(70, FORMULA_H, W - 70, FORMULA_H);
-  pop();
+  overlayPg.push();
+  overlayPg.stroke(255, 255, 255, 24);
+  overlayPg.strokeWeight(1);
+  overlayPg.line(70, FORMULA_H, W - 70, FORMULA_H);
+  overlayPg.pop();
 }
 
 function drawVignette() {
-  push();
-  noFill();
+  overlayPg.push();
+  overlayPg.noFill();
   const steps = 55;
   const maxR = dist(W / 2, H / 2, 0, 0) * 1.1;
-  strokeWeight((maxR / steps) * 2 + 2);
+  overlayPg.strokeWeight((maxR / steps) * 2 + 2);
   for (let i = 0; i < steps; i++) {
     const k = i / (steps - 1);
     const a = map(k, 0.68, 1.0, 0, 100, true);
     if (a <= 0) continue;
-    stroke(0, 0, 0, a);
-    circle(W / 2, H / 2, lerp(0, maxR, k) * 2);
+    overlayPg.stroke(0, 0, 0, a);
+    overlayPg.circle(W / 2, H / 2, lerp(0, maxR, k) * 2);
   }
-  pop();
+  overlayPg.pop();
 }
 
 // ─── Interaction ─────────────────────────────────────────────────────────────
