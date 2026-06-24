@@ -4,6 +4,18 @@ let helixParticles = [];
 let stars = [];
 let time = 0;
 const PHI = (1 + Math.sqrt(5)) / 2; // Golden ratio
+
+const colors = [
+  '#0a0a2e', // 0 deep navy
+  '#1a0a4e', // 1 dark purple
+  '#2d0a6e', // 2 purple
+  '#4b0082', // 3 indigo
+  '#7b2fff', // 4 violet
+  '#00d4ff', // 5 cyan
+  '#00ff87', // 6 mint
+  '#ff2d7a', // 7 magenta
+  '#ff6b35', // 8 orange
+];
 const numParticles = 450;
 const numHelixParticles = 40;
 const numStars = 150;
