@@ -21,7 +21,6 @@ const COL_CF = { r: 182, g: 255, b: 61  };  // acid-green — cevian C-F, ratio 
 // ─── Ceva's Theorem constants ──────────────────────────────────────────────────
 const CEVA = {
   TRI_SCALE: 185,   // circumradius-ish, px (sized to fit the visible band at CAM_DIST=900, FOV=0.55)
-  ORBIT_R:   0.24,  // orbit radius in barycentric space
   CAM_FOV:   0.55,
   CAM_DIST:  900,
 };
@@ -33,6 +32,8 @@ let canvasEl = null;
 // ─── Simulation state ─────────────────────────────────────────────────────────
 let A, B, C;            // triangle vertices, fixed for the whole loop, {x,y,z:0}
 let orbitTrailPts = [];  // precomputed closed path of P, world-space {x,y}
+let manualFeet = null;   // { d, e, f } interpolation values along BC, CA, AB
+let draggedFoot = null;  // 'd', 'e', or 'f' while the pointer is held
 
 // ─── Recording ───────────────────────────────────────────────────────────────
 let muxer = null, encoder = null;
@@ -46,6 +47,8 @@ function setup() {
 
   const cnv = createCanvas(W, H);
   canvasEl = cnv.elt;
+  canvasEl.style.cursor = 'grab';
+  canvasEl.style.touchAction = 'none';
   pixelDensity(1);
   frameRate(FPS);
   colorMode(RGB, 255, 255, 255, 255);
@@ -100,51 +103,65 @@ function initTriangle() {
   const N = 120;
   for (let i = 0; i < N; i++) {
     const loop = i / N;
-    const bary = getBary(loop);
-    const P = baryToWorld(bary.a, bary.b, bary.g);
+    const params = getAutoFeetParameters(loop);
+    const { D, E } = feetFromParameters(params);
+    const P = lineIntersection(A, D, B, E);
     orbitTrailPts.push({ x: P.x, y: P.y });
   }
 }
 
-// ─── Barycentric orbit path — closed, integer-k periodic (seamless loop) ─────
-// u, v: orthonormal basis of the plane a+b+g=0 (tangent plane of the 2-simplex)
-const U_BASIS = { x: 1 / Math.SQRT2, y: -1 / Math.SQRT2, z: 0 };
-const V_BASIS = { x: 1 / Math.sqrt(6), y: 1 / Math.sqrt(6), z: -2 / Math.sqrt(6) };
-
-function getBary(loop) {
+// ─── Independent foot animation — integer frequencies keep the loop seamless ─
+function getAutoFeetParameters(loop) {
   const t = TAU * loop;
-  const r = CEVA.ORBIT_R;
-  const co = Math.cos(t), si = Math.sin(t);
-  const a = 1 / 3 + r * (co * U_BASIS.x + si * V_BASIS.x);
-  const b = 1 / 3 + r * (co * U_BASIS.y + si * V_BASIS.y);
-  const g = 1 / 3 + r * (co * U_BASIS.z + si * V_BASIS.z);
-  return { a, b, g };
+  return {
+    d: 0.50 + 0.36 * Math.sin(t),
+    e: 0.50 + 0.33 * Math.sin(2 * t + 0.9),
+    f: 0.50 + 0.30 * Math.sin(3 * t + 2.1),
+  };
 }
 
-function baryToWorld(a, b, g) {
+function feetFromParameters(params) {
   return {
-    x: a * A.x + b * B.x + g * C.x,
-    y: a * A.y + b * B.y + g * C.y,
+    D: lerpPoint(B, C, params.d),
+    E: lerpPoint(C, A, params.e),
+    F: lerpPoint(A, B, params.f),
+  };
+}
+
+function computeRatiosFromParameters(params) {
+  const bdDc = params.d / (1 - params.d);
+  const ceEa = params.e / (1 - params.e);
+  const afFb = params.f / (1 - params.f);
+  return { bdDc, ceEa, afFb, product: bdDc * ceEa * afFb };
+}
+
+function lerpPoint(p0, p1, t) {
+  return {
+    x: p0.x + (p1.x - p0.x) * t,
+    y: p0.y + (p1.y - p0.y) * t,
+    z: p0.z + (p1.z - p0.z) * t,
+  };
+}
+
+function lineIntersection(p0, p1, p2, p3) {
+  const x1 = p0.x, y1 = p0.y, x2 = p1.x, y2 = p1.y;
+  const x3 = p2.x, y3 = p2.y, x4 = p3.x, y4 = p3.y;
+  const den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+  if (Math.abs(den) < 1e-9) return { x: 0, y: 0, z: 0 };
+  const cross1 = x1 * y2 - y1 * x2;
+  const cross2 = x3 * y4 - y3 * x4;
+  return {
+    x: (cross1 * (x3 - x4) - (x1 - x2) * cross2) / den,
+    y: (cross1 * (y3 - y4) - (y1 - y2) * cross2) / den,
     z: 0,
   };
 }
 
-// ─── Cevian feet (D, E, F) and ratios — proves Ceva's theorem live ───────────
-function computeCevianFeet(bary) {
-  const { a, b, g } = bary;
-  const D = { x: (b * B.x + g * C.x) / (b + g), y: (b * B.y + g * C.y) / (b + g), z: 0 };
-  const E = { x: (g * C.x + a * A.x) / (g + a), y: (g * C.y + a * A.y) / (g + a), z: 0 };
-  const F = { x: (a * A.x + b * B.x) / (a + b), y: (a * A.y + b * B.y) / (a + b), z: 0 };
-  return { D, E, F };
-}
-
-function computeRatios(bary) {
-  const { a, b, g } = bary;
-  const bdDc = g / b;
-  const ceEa = a / g;
-  const afFb = b / a;
-  const product = bdDc * ceEa * afFb;
-  return { bdDc, ceEa, afFb, product };
+function worldToBary(point) {
+  const den = (B.y - C.y) * (A.x - C.x) + (C.x - B.x) * (A.y - C.y);
+  const a = ((B.y - C.y) * (point.x - C.x) + (C.x - B.x) * (point.y - C.y)) / den;
+  const b = ((C.y - A.y) * (point.x - C.x) + (A.x - C.x) * (point.y - C.y)) / den;
+  return { a, b, g: 1 - a - b };
 }
 
 // ─── Math helpers ─────────────────────────────────────────────────────────────
@@ -168,19 +185,28 @@ function bakeGrain() {
 function draw() {
   const frame = isRecording ? recFrameCount : frameCount;
   const loop  = (frame % LOOP_FRAMES) / LOOP_FRAMES;
-  const phase = loop * TAU;
 
-  const bary = getBary(loop);
-  const P = baryToWorld(bary.a, bary.b, bary.g);
-  const { D, E, F } = computeCevianFeet(bary);
-  const ratios = computeRatios(bary);
+  let bary, P, D, E, F, ratios;
+  if (manualFeet) {
+    ({ D, E, F } = feetFromParameters(manualFeet));
+    P = lineIntersection(A, D, B, E);
+    bary = worldToBary(P);
+    ratios = computeRatiosFromParameters(manualFeet);
+  } else {
+    const params = getAutoFeetParameters(loop);
+    ({ D, E, F } = feetFromParameters(params));
+    P = lineIntersection(A, D, B, E);
+    bary = worldToBary(P);
+    ratios = computeRatiosFromParameters(params);
+  }
 
   pg.clear();
   glowPg.clear();
   overlayPg.clear();
 
-  renderCevaScene(loop, phase, P, D, E, F);
-  drawHUD(loop, bary, ratios);
+  renderCevaScene(P, D, E, F, Boolean(manualFeet));
+  drawHUD(loop, bary, ratios, Boolean(manualFeet));
+  drawFootLabels(D, E, F);
   drawVignette();
   compositeFrame();
 
@@ -193,26 +219,25 @@ function draw() {
 }
 
 // ─── Scene rendering ──────────────────────────────────────────────────────────
-function renderCevaScene(loop, phase, P, D, E, F) {
+function renderCevaScene(P, D, E, F, isManual) {
   prepCameraStatic(glowPg);
   prepCameraStatic(pg);
 
   // Glow pass
   glowPg.push();
   glowPg.blendMode(ADD);
-  drawOrbitTrail(glowPg, true);
+  if (!isManual) drawOrbitTrail(glowPg, true);
   drawTriangleEdges(glowPg, true);
   drawCevians(glowPg, P, D, E, F, true);
-  drawVertexMarkers(glowPg, P, D, E, F, true);
   glowPg.pop();
 
   // Sharp pass
   pg.push();
   pg.blendMode(BLEND);
-  drawOrbitTrail(pg, false);
+  if (!isManual) drawOrbitTrail(pg, false);
   drawTriangleEdges(pg, false);
   drawCevians(pg, P, D, E, F, false);
-  drawVertexMarkers(pg, P, D, E, F, false);
+  drawVertexMarkers(pg, P, D, E, F);
   pg.pop();
 }
 
@@ -234,6 +259,35 @@ function prepCameraStatic(g) {
 
   g.perspective(CEVA.CAM_FOV, W / H, 10, 4000);
   g.camera(0, -140, CEVA.CAM_DIST, 0, worldOffset, 0, 0, 1, 0);
+}
+
+// Project a point on the triangle plane into the main canvas coordinate system.
+// This mirrors prepCameraStatic and lets pointer input track the rendered feet.
+function worldToScreen(point) {
+  const sceneMidPx  = (HUD_TOP_H + (H - HUD_BOT_H)) / 2;
+  const pixelOffset = sceneMidPx - H / 2;
+  const halfTan     = Math.tan(CEVA.CAM_FOV / 2);
+  const worldOffset = pixelOffset * (2 * halfTan * CEVA.CAM_DIST) / H;
+
+  const eyeY = -140;
+  const eyeZ = CEVA.CAM_DIST;
+  const fy = worldOffset - eyeY;
+  const fz = -eyeZ;
+  const fLen = Math.hypot(fy, fz);
+  const forwardY = fy / fLen;
+  const forwardZ = fz / fLen;
+  const downY = -forwardZ;
+  const downZ = forwardY;
+
+  const relY = point.y - eyeY;
+  const relZ = point.z - eyeZ;
+  const depth = relY * forwardY + relZ * forwardZ;
+  const focal = H / (2 * halfTan);
+
+  return {
+    x: W / 2 + (point.x / depth) * focal,
+    y: H / 2 + ((relY * downY + relZ * downZ) / depth) * focal,
+  };
 }
 
 // ─── 1. Triangle edges ────────────────────────────────────────────────────────
@@ -259,19 +313,44 @@ function drawCevians(g, P, D, E, F, isGlow) {
   g.strokeWeight(wt);
 
   g.stroke(COL_AD.r, COL_AD.g, COL_AD.b, alpha);
-  g.line(A.x, A.y, A.z, D.x, D.y, D.z);
+  if (isGlow) drawLineWithGap(g, A, D, P, 18);
+  else g.line(A.x, A.y, A.z, D.x, D.y, D.z);
 
   g.stroke(COL_BE.r, COL_BE.g, COL_BE.b, alpha);
-  g.line(B.x, B.y, B.z, E.x, E.y, E.z);
+  if (isGlow) drawLineWithGap(g, B, E, P, 18);
+  else g.line(B.x, B.y, B.z, E.x, E.y, E.z);
 
   g.stroke(COL_CF.r, COL_CF.g, COL_CF.b, alpha);
-  g.line(C.x, C.y, C.z, F.x, F.y, F.z);
+  if (isGlow) drawLineWithGap(g, C, F, P, 18);
+  else g.line(C.x, C.y, C.z, F.x, F.y, F.z);
 
   g.pop();
 }
 
+// Keep additive line glows from stacking into a large grey disc at P.
+// Only the glow is interrupted; the sharp cevian remains mathematically whole.
+function drawLineWithGap(g, start, end, center, gap) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return;
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const along = (center.x - start.x) * ux + (center.y - start.y) * uy;
+  const closest = {
+    x: start.x + ux * along,
+    y: start.y + uy * along,
+  };
+  const before = { x: closest.x - ux * gap, y: closest.y - uy * gap };
+  const after  = { x: closest.x + ux * gap, y: closest.y + uy * gap };
+
+  g.line(start.x, start.y, start.z, before.x, before.y, center.z);
+  g.line(after.x, after.y, center.z, end.x, end.y, end.z);
+}
+
 // ─── 3. Vertex / foot / P markers ─────────────────────────────────────────────
-function drawVertexMarkers(g, P, D, E, F, isGlow) {
+function drawVertexMarkers(g, P, D, E, F) {
   const corners = [A, B, C];
   // Each foot colored to match its own cevian: D on AD (cyan), E on BE (magenta), F on CF (green)
   const feet    = [{ v: D, c: COL_AD }, { v: E, c: COL_BE }, { v: F, c: COL_CF }];
@@ -282,29 +361,24 @@ function drawVertexMarkers(g, P, D, E, F, isGlow) {
   for (const v of corners) {
     g.push();
     g.translate(v.x, v.y, v.z);
-    g.fill(INK_R, INK_G, INK_B, isGlow ? 20 : 200);
-    g.sphere(isGlow ? 16 : 6);
+    g.fill(INK_R, INK_G, INK_B, 200);
+    g.sphere(6);
     g.pop();
   }
 
   for (const { v, c } of feet) {
     g.push();
     g.translate(v.x, v.y, v.z);
-    g.fill(c.r, c.g, c.b, isGlow ? 24 : 220);
-    g.sphere(isGlow ? 13 : 5.5);
+    g.fill(c.r, c.g, c.b, 220);
+    g.sphere(5.5);
     g.pop();
   }
 
   // P — the concurrency point, brightest marker in the scene
   g.push();
   g.translate(P.x, P.y, P.z);
-  if (isGlow) {
-    g.fill(INK_R, INK_G, INK_B, 55);
-    g.sphere(30);
-  } else {
-    g.fill(INK_R, INK_G, INK_B, 255);
-    g.sphere(9);
-  }
+  g.fill(INK_R, INK_G, INK_B, 255);
+  g.sphere(9);
   g.pop();
 
   g.pop();
@@ -326,6 +400,26 @@ function drawOrbitTrail(g, isGlow) {
     g.line(p0.x, p0.y, 0, p1.x, p1.y, 0);
   }
   g.pop();
+}
+
+function drawFootLabels(D, E, F) {
+  const ctx = overlayPg.drawingContext;
+  const labels = [
+    { text: 'D', point: D, color: COL_AD },
+    { text: 'E', point: E, color: COL_BE },
+    { text: 'F', point: F, color: COL_CF },
+  ];
+
+  ctx.save();
+  ctx.font = '600 22px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  for (const label of labels) {
+    const screen = worldToScreen(label.point);
+    ctx.fillStyle = `rgba(${label.color.r},${label.color.g},${label.color.b},0.95)`;
+    ctx.fillText(label.text, screen.x, screen.y - 20);
+  }
+  ctx.restore();
 }
 
 // ─── Composite ────────────────────────────────────────────────────────────────
@@ -406,7 +500,7 @@ function drawColoredTokenRow(ctx, mono, y, tokens) {
   ctx.restore();
 }
 
-function drawHUD(loop, bary, ratios) {
+function drawHUD(loop, bary, ratios, isManual) {
   const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
   const ctx  = overlayPg.drawingContext;
   const bm   = 52;   // bracket / text margin from canvas edge
@@ -491,24 +585,26 @@ function drawHUD(loop, bary, ratios) {
     { text: 'CE/EA', c: COL_BE },
     { text: ' * ',    c: null },
     { text: 'AF/FB', c: COL_CF },
-    { text: ' = 1',   c: null },
+    { text: ` = ${ratios.product.toFixed(3)}`, c: null },
   ], 0.50);
   ctx.save();
   ctx.textAlign    = 'center';
   ctx.font      = `normal 17px ${MONO}`;
   ctx.fillStyle = 'rgba(255,255,255,0.30)';
-  ctx.fillText(`loop=${loopStr}`, W / 2, 165 + SAFE_TOP);
+  ctx.fillText(isManual ? 'mode=manual  drag D / E / F  [A]=auto' : `loop=${loopStr}`, W / 2, 165 + SAFE_TOP);
   ctx.restore();
   ctx.restore();
 
   // ── Top strip: loop progress bar
   const pbX = 112, pbY = 230 + SAFE_TOP, pbW = W - 224, pbH = 4;
-  ctx.save();
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.beginPath(); ctx.roundRect(pbX, pbY, pbW, pbH, 3); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.60)';
-  ctx.beginPath(); ctx.roundRect(pbX, pbY, pbW * loop, pbH, 3); ctx.fill();
-  ctx.restore();
+  if (!isManual) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath(); ctx.roundRect(pbX, pbY, pbW, pbH, 3); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.60)';
+    ctx.beginPath(); ctx.roundRect(pbX, pbY, pbW * loop, pbH, 3); ctx.fill();
+    ctx.restore();
+  }
 
   // ── Bottom strip: layout built from the bottom upward
   const footY   = H - 48 - SAFE_BOT;   // baseline for footer row, pulled up out of IG's caption/button zone
@@ -574,7 +670,98 @@ function drawVignette() {
 }
 
 // ─── Interaction ──────────────────────────────────────────────────────────────
+function mousePressed() {
+  const loop = ((isRecording ? recFrameCount : frameCount) % LOOP_FRAMES) / LOOP_FRAMES;
+  const params = manualFeet || getAutoFeetParameters(loop);
+  const { D, E, F } = feetFromParameters(params);
+  const candidates = [
+    { key: 'd', point: D },
+    { key: 'e', point: E },
+    { key: 'f', point: F },
+  ];
+
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const candidate of candidates) {
+    const screen = worldToScreen(candidate.point);
+    const distance = Math.hypot(mouseX - screen.x, mouseY - screen.y);
+    if (distance < nearestDistance) {
+      nearest = candidate.key;
+      nearestDistance = distance;
+    }
+  }
+
+  // The visible feet stay compact, but their hit targets are deliberately
+  // generous so a moving marker remains practical to catch on touch screens.
+  // Pressing close to a side also selects its foot and moves it immediately.
+  if (nearestDistance > 96) {
+    const sides = [
+      { key: 'd', start: B, end: C },
+      { key: 'e', start: C, end: A },
+      { key: 'f', start: A, end: B },
+    ];
+    nearest = null;
+    nearestDistance = Infinity;
+    for (const side of sides) {
+      const start = worldToScreen(side.start);
+      const end = worldToScreen(side.end);
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const t = clamp01(((mouseX - start.x) * dx + (mouseY - start.y) * dy) / (dx * dx + dy * dy));
+      const distance = Math.hypot(mouseX - (start.x + dx * t), mouseY - (start.y + dy * t));
+      if (distance < nearestDistance) {
+        nearest = side.key;
+        nearestDistance = distance;
+      }
+    }
+    if (nearestDistance > 64) return true;
+  }
+  if (!manualFeet) manualFeet = { ...params };
+  draggedFoot = nearest;
+  canvasEl.style.cursor = 'grabbing';
+  updateDraggedFoot(mouseX, mouseY);
+  return false;
+}
+
+function updateDraggedFoot(pointerX, pointerY) {
+  if (!manualFeet || !draggedFoot) return;
+  const side = {
+    d: [B, C],
+    e: [C, A],
+    f: [A, B],
+  }[draggedFoot];
+  const start = worldToScreen(side[0]);
+  const end = worldToScreen(side[1]);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const t = ((pointerX - start.x) * dx + (pointerY - start.y) * dy) / (dx * dx + dy * dy);
+  manualFeet[draggedFoot] = clamp(t, 0.035, 0.965);
+}
+
+function mouseDragged() {
+  if (!draggedFoot) return true;
+  updateDraggedFoot(mouseX, mouseY);
+  return false;
+}
+
+function mouseReleased() {
+  if (!draggedFoot) return true;
+  draggedFoot = null;
+  canvasEl.style.cursor = 'grab';
+  return false;
+}
+
+function touchStarted() { return mousePressed(); }
+function touchMoved()   { return mouseDragged(); }
+function touchEnded()   { return mouseReleased(); }
+
 function keyReleased() {
+  if (key === 'a' || key === 'A') {
+    manualFeet = null;
+    draggedFoot = null;
+    if (canvasEl) canvasEl.style.cursor = 'grab';
+    return false;
+  }
   if (key === 'r' || key === 'R') {
     isRecording ? stopRecording() : startRecording();
     return false;
