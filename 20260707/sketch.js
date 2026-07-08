@@ -32,6 +32,9 @@ const SACRED = {
   // Radiant core at the center
   CORE_R:      34,
 
+  // Ceva theorem construction: triangle + 3 cevians meeting at one point
+  CEVA_R:      225,
+
   // Great-circle orbit rings (armillary-sphere style), tilted at golden-ratio angles
   RING_COUNT:  3,
   RING_R:      300,
@@ -310,7 +313,8 @@ function drawScene(g, loop, phase, isGlow) {
   drawOrbitRings(g, phase, isGlow);   // 2. armillary great-circles
   drawIcosaCage(g, phase, isGlow);    // 3. inner sacred-geometry cage
   drawShell(g, phase, isGlow);        // 4. outer Fibonacci-sphere lattice
-  drawCore(g, phase, isGlow);         // 5. radiant nucleus — drawn last
+  drawCore(g, phase, isGlow);         // 5. radiant nucleus
+  drawCevaTheorem(g, phase, isGlow);  // 6. theorem layer — concurrent cevians
   g.pop();
 
   g.pop();
@@ -336,6 +340,87 @@ function drawCore(g, ph, isGlow) {
     g.fill(INK_R, INK_G, INK_B, alpha);
     g.sphere(r * layer.k, isGlow ? 12 : 20, isGlow ? 9 : 14);
   }
+  g.pop();
+}
+
+// ─── Ceva theorem layer ──────────────────────────────────────────────────────
+// For barycentric weights (a,b,c), the cevians from A/B/C through P hit the
+// opposite sides at D/E/F and satisfy:
+// (BD/DC) * (CE/EA) * (AF/FB) = (c/b) * (a/c) * (b/a) = 1.
+// The moving point is always inside the triangle, so the theorem remains exact
+// through the full seamless loop rather than becoming decorative coincidence.
+function mix3(u, v, t) {
+  return {
+    x: u.x + (v.x - u.x) * t,
+    y: u.y + (v.y - u.y) * t,
+    z: u.z + (v.z - u.z) * t,
+  };
+}
+
+function drawPointSphere(g, p, r, alpha, isGlow) {
+  g.push();
+  g.translate(p.x, p.y, p.z);
+  g.noStroke();
+  g.fill(INK_R, INK_G, INK_B, alpha * (isGlow ? PARAMS.glowStrength : 1));
+  g.sphere(r, isGlow ? 10 : 14, isGlow ? 7 : 10);
+  g.pop();
+}
+
+function drawCevaTheorem(g, ph, isGlow) {
+  const R = SACRED.CEVA_R;
+  const A = { x: 0,           y: -R,       z: 0 };
+  const B = { x: -R * 0.866,  y: R * 0.5,  z: 0 };
+  const C = { x: R * 0.866,   y: R * 0.5,  z: 0 };
+
+  let wa = 0.36 + 0.09 * Math.sin(ph);
+  let wb = 0.34 + 0.08 * Math.sin(2 * ph + 1.7);
+  let wc = 0.30 + 0.07 * Math.sin(3 * ph + 3.1);
+  const sum = wa + wb + wc;
+  wa /= sum; wb /= sum; wc /= sum;
+
+  const P = {
+    x: A.x * wa + B.x * wb + C.x * wc,
+    y: A.y * wa + B.y * wb + C.y * wc,
+    z: 0,
+  };
+  const D = mix3(B, C, wc / (wb + wc));
+  const E = mix3(C, A, wa / (wc + wa));
+  const F = mix3(A, B, wb / (wa + wb));
+
+  const fog = fogFactor(0, 0, 0);
+  const theoremPulse = 0.72 + 0.28 * Math.sin(2 * ph + 0.4);
+  const edgeAlpha = (isGlow ? 9 : 38) * fog * breath;
+  const cevianAlpha = (isGlow ? 18 : 78) * fog * breath * theoremPulse;
+  if (cevianAlpha < 1) return;
+
+  g.push();
+  g.rotateY(ph * 0.18);
+  g.rotateX(0.48 + 0.08 * Math.sin(ph));
+  g.rotateZ(-ph * 0.25);
+  g.translate(0, 0, isGlow ? -6 : 6);
+
+  g.noFill();
+  g.stroke(INK_R, INK_G, INK_B, edgeAlpha * (isGlow ? PARAMS.glowStrength : 1));
+  g.strokeWeight(isGlow ? 5.2 : 1.5);
+  g.line(A.x, A.y, A.z, B.x, B.y, B.z);
+  g.line(B.x, B.y, B.z, C.x, C.y, C.z);
+  g.line(C.x, C.y, C.z, A.x, A.y, A.z);
+
+  g.stroke(INK_R, INK_G, INK_B, cevianAlpha * (isGlow ? PARAMS.glowStrength : 1));
+  g.strokeWeight(isGlow ? 8.2 : 2.25);
+  g.line(A.x, A.y, A.z, D.x, D.y, D.z);
+  g.line(B.x, B.y, B.z, E.x, E.y, E.z);
+  g.line(C.x, C.y, C.z, F.x, F.y, F.z);
+
+  const markerAlpha = (isGlow ? 26 : 110) * fog * breath;
+  drawPointSphere(g, A, isGlow ? 5.8 : 2.7, markerAlpha * 0.75, isGlow);
+  drawPointSphere(g, B, isGlow ? 5.8 : 2.7, markerAlpha * 0.75, isGlow);
+  drawPointSphere(g, C, isGlow ? 5.8 : 2.7, markerAlpha * 0.75, isGlow);
+  drawPointSphere(g, D, isGlow ? 7.4 : 3.4, markerAlpha, isGlow);
+  drawPointSphere(g, E, isGlow ? 7.4 : 3.4, markerAlpha, isGlow);
+  drawPointSphere(g, F, isGlow ? 7.4 : 3.4, markerAlpha, isGlow);
+  drawPointSphere(g, P, isGlow ? 12.5 : 5.4, markerAlpha * 1.35, isGlow);
+
   g.pop();
 }
 
@@ -548,15 +633,15 @@ function drawHUD(loop) {
   textFont('ui-monospace, Menlo, monospace');
   fill(255, 255, 255, 140);
   textSize(13); textAlign(LEFT, TOP);
-  text('SACRED GEOMETRY · METATRON SPHERE', 52, 52);
+  text('SACRED GEOMETRY · CEVA THEOREM SPHERE', 52, 52);
   fill(255, 255, 255, 60);
   textSize(10);
   text('fibonacci shell=' + SACRED.SHELL_COUNT
-    + '  icosa cage=12v/30e  rings=' + SACRED.RING_COUNT
+    + '  ceva product=1  icosa cage=12v/30e  rings=' + SACRED.RING_COUNT
     + '  loop=' + loop.toFixed(3), 52, 74);
   fill(255, 255, 255, 45); textSize(10);
   textAlign(LEFT, BOTTOM);  text(W + '×' + H + ' · ' + FPS + 'fps', 52, H - 52);
-  textAlign(RIGHT, BOTTOM); text('20260707 · METATRON SPHERE', W - 52, H - 52);
+  textAlign(RIGHT, BOTTOM); text('20260707 · CEVA THEOREM', W - 52, H - 52);
   pop();
 }
 
