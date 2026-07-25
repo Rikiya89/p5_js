@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stokes’ Theorem · 3D Mathematics Simulator</title>
+  <link rel="icon" href="data:," />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background:#06060a; color:#fff; font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; display:flex; flex-direction:column; align-items:center; padding:32px 16px 48px; min-height:100vh; }
+    #canvas-wrap canvas { width:min(540px,100vw)!important; height:auto!important; display:block; }
+    #controls { position:fixed; right:18px; bottom:18px; z-index:20; width:min(390px,calc(100vw - 36px)); display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid rgba(255,255,255,.13); border-radius:10px; background:rgba(3,3,5,.88); box-shadow:0 18px 60px rgba(0,0,0,.55); backdrop-filter:blur(14px); }
+    #controls::before { content:'CAPTURE / SIMULATION'; font-size:10px; letter-spacing:.18em; color:rgba(255,255,255,.42); }
+    .ctrl-row { display:flex; align-items:center; gap:12px; }
+    button { flex:1; padding:11px 0; border:1px solid rgba(255,255,255,.18); border-radius:6px; background:rgba(255,255,255,.06); color:#fff; font:13px inherit; letter-spacing:.08em; cursor:pointer; transition:background .15s; }
+    button:hover:not(:disabled){background:rgba(255,255,255,.13)} button:disabled{opacity:.35;cursor:default}
+    #panel { display:grid; grid-template-columns:1fr; gap:8px; padding:12px; border:1px solid rgba(255,255,255,.1); border-radius:6px; }
+    label { display:grid; grid-template-columns:84px 1fr 38px; align-items:center; gap:8px; font-size:10px; color:rgba(255,255,255,.55); }
+    input[type=range]{width:100%;accent-color:#fff} output{text-align:right;color:#fff}
+    #status-row{display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.35);padding:0 2px} #status{color:rgba(255,255,255,.7)}
+    #export-progress{width:100%;height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden} #progressFill{height:100%;background:#fff;width:0%;transition:width .1s linear}
+    #hint{font-size:11px;color:rgba(255,255,255,.25);text-align:center;line-height:1.6}
+    body.recording #panel, body.recording #hint { opacity:.18; }
+    @media(min-width:1000px){#canvas-wrap{transform:translateX(-180px)}}
+    @media(max-width:720px){#controls{right:10px;bottom:10px;width:min(330px,calc(100vw - 20px));padding:10px}#panel{display:none}#hint{display:none}}
+  </style>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+  <div id="controls">
+    <div class="ctrl-row"><button id="startBtn">⏺ Record MP4</button><button id="stopBtn" disabled>⏹ Stop</button><button id="pngBtn">⬇ PNG</button></div>
+    <div id="panel">
+      <label>AMPLITUDE <input id="amplitude" type="range" min="0" max="1.5" step="0.05" value="1"><output id="amplitudeOut">1.00</output></label>
+      <label>FREQUENCY <input id="frequency" type="range" min="1" max="5" step="0.25" value="2.5"><output id="frequencyOut">2.50</output></label>
+      <label>FIELD <input id="fieldStrength" type="range" min="0.25" max="2" step="0.05" value="1"><output id="fieldStrengthOut">1.00</output></label>
+      <label>PARTICLES <input id="particleSpeed" type="range" min="0.25" max="2" step="0.05" value="1"><output id="particleSpeedOut">1.00</output></label>
+      <label>BOUNDARY N <input id="boundarySamples" type="range" min="64" max="512" step="32" value="256"><output id="boundarySamplesOut">256</output></label>
+      <label>SURFACE N <input id="surfaceResolution" type="range" min="12" max="40" step="2" value="28"><output id="surfaceResolutionOut">28</output></label>
+    </div>
+    <div id="export-progress"><div id="progressFill"></div></div>
+    <div id="status-row"><span>Status: <span id="status">Ready</span></span><span><span id="duration">0.0</span>s / <span id="maxDuration"></span>s · <span id="frameCount">0</span> / <span id="maxFrames"></span></span></div>
+    <div id="hint">drag rotate · wheel zoom · Space pause · R reset · A auto · S surface · V field · C curl · N normals · B boundary · G grid · I values · H HUD · P PNG · E MP4</div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@latest/build/mp4-muxer.js"></script>
+  <script src="sketch.js"></script>
+</body>
+</html>
