@@ -45,7 +45,7 @@ const CONFIG = {
   baseLineWeight: 1.05,
   glowLineWeight: 6.5,
   coreAlpha: 188,
-  secondaryAlpha: 38,
+  secondaryAlpha: 62,
   selectedAlpha: 255,
 
   travellingParticleCount: 12,
@@ -58,15 +58,13 @@ const CONFIG = {
   cameraHeightVariation: 52,
   cameraStartAngle: -0.55,
 
-  baseSphereRadius: 108,
-  baseSphereX: 310,
-  baseSphereY: -300,
-
   selectedFiber: 13,
-  linkedPair: [13, 47],
+  linkedPair: [32, 36],
   showInterface: true,
-  showBaseSphere: true,
   showProjectionGuides: true,
+
+  heroBandCenter: 0.6,
+  heroBandHalfWidth: 0.12,
 };
 
 // ============================================================
@@ -381,29 +379,47 @@ function renderFiberGlow(fiberIndex, colorValue, visibility) {
   renderCurvatureCore(fiberIndex, selectedAlpha);
 }
 
+const CURVATURE_BUCKETS = 4;
+
+// Quantizing curvature into a handful of buckets lets segments with similar
+// curvature share one stroke()/strokeWeight() state instead of re-issuing
+// both WebGL state changes per segment (168 per fiber) — same visual
+// gradation, far fewer state transitions per frame.
 function renderCurvatureCore(fiberIndex, alpha) {
   const pointCount = CONFIG.pointsPerFiber;
   const stride = pointCount + 1;
   const sampleOffset = fiberIndex * stride;
   const positionOffset = sampleOffset * 3;
 
-  for (let pi = 0; pi < pointCount; pi++) {
-    if (!fiberValid[sampleOffset + pi] || !fiberValid[sampleOffset + pi + 1]) {
-      continue;
+  for (let bucket = 0; bucket < CURVATURE_BUCKETS; bucket++) {
+    const bucketT = bucket / (CURVATURE_BUCKETS - 1);
+    let strokeSet = false;
+    for (let pi = 0; pi < pointCount; pi++) {
+      if (!fiberValid[sampleOffset + pi] || !fiberValid[sampleOffset + pi + 1]) {
+        continue;
+      }
+      const curvature = clamp(fiberCurvature[sampleOffset + pi] * 15, 0, 1);
+      const pointBucket = Math.min(
+        CURVATURE_BUCKETS - 1,
+        Math.floor(curvature * CURVATURE_BUCKETS),
+      );
+      if (pointBucket !== bucket) continue;
+      if (!strokeSet) {
+        stroke(INK.r, INK.g, INK.b, alpha * (0.22 + bucketT * 0.34));
+        strokeWeight(0.65 + bucketT * 0.4);
+        strokeSet = true;
+      }
+      const a = positionOffset + pi * 3;
+      const b = a + 3;
+      line(
+        fiberPositions[a],
+        fiberPositions[a + 1],
+        fiberPositions[a + 2],
+        fiberPositions[b],
+        fiberPositions[b + 1],
+        fiberPositions[b + 2],
+      );
     }
-    const a = positionOffset + pi * 3;
-    const b = a + 3;
-    const curvature = clamp(fiberCurvature[sampleOffset + pi] * 15, 0, 1);
-    stroke(INK.r, INK.g, INK.b, alpha * (0.22 + curvature * 0.34));
-    strokeWeight(0.65 + curvature * 0.4);
-    line(
-      fiberPositions[a],
-      fiberPositions[a + 1],
-      fiberPositions[a + 2],
-      fiberPositions[b],
-      fiberPositions[b + 1],
-      fiberPositions[b + 2],
-    );
   }
 }
 
@@ -432,19 +448,31 @@ function isFocusedFiber(fiberIndex) {
   return strength;
 }
 
+// A band of near-equal eta traces a single coherent torus (constant-latitude
+// family on the base S^2), unlike an index-based scatter which has no
+// geometric relationship to the fibers it picks.
+function isHeroBandFiber(fiberIndex) {
+  return (
+    Math.abs(fibers[fiberIndex].eta - CONFIG.heroBandCenter) <
+    CONFIG.heroBandHalfWidth
+  );
+}
+
 function renderFullFibration() {
-  const dim = 1 - focusStrength() * 0.86;
+  const dim = 1 - focusStrength() * 0.6;
   const projectionLift = modeMixes[MODES.PROJECTION] * 0.18;
+  const hero = heroMix();
 
   for (let fi = 0; fi < CONFIG.fiberCount; fi++) {
     const depth = fiberDepthBrightness(fi);
     const selected = isFocusedFiber(fi);
-    const isPrimaryGroup = fi % 8 === 0;
+    const isPrimaryGroup = isHeroBandFiber(fi);
     const groupColor = isPrimaryGroup ? CYAN : INK;
+    const heroLift = isPrimaryGroup ? hero * 1.6 : 0;
     const alpha =
       CONFIG.secondaryAlpha *
       depth *
-      (dim + selected * 0.2 + projectionLift) *
+      (dim + selected * 0.2 + projectionLift + heroLift) *
       (isPrimaryGroup ? 2.75 : 1);
     renderFiberPath(
       fi,
@@ -452,6 +480,14 @@ function renderFullFibration() {
       alpha,
       CONFIG.baseLineWeight * (isPrimaryGroup ? 1.22 : 1),
     );
+    if (isPrimaryGroup && hero > 0.01) {
+      renderFiberPath(
+        fi,
+        groupColor,
+        alpha * 0.16 * hero,
+        CONFIG.glowLineWeight * hero,
+      );
+    }
   }
 }
 
@@ -482,17 +518,19 @@ function renderHopfMapMode() {
 function renderProjectionMode() {
   const visibility = modeMixes[MODES.PROJECTION];
   if (visibility <= 0.001) return;
-  for (let i = 0; i < 4; i++) {
-    const fiberIndex = (i * 16 + 6) % CONFIG.fiberCount;
-    renderFiberGlow(fiberIndex, i % 2 ? ACID : CYAN, visibility * 0.42);
+  let shown = 0;
+  for (let fi = 0; fi < CONFIG.fiberCount && shown < 4; fi++) {
+    if (!isHeroBandFiber(fi)) continue;
+    renderFiberGlow(fi, shown % 2 ? ACID : CYAN, visibility * 0.42);
+    shown++;
   }
   if (CONFIG.showProjectionGuides) renderProjectionGuides(visibility);
 }
 
 function renderProjectionGuides(visibility) {
   noFill();
-  stroke(ACID.r, ACID.g, ACID.b, 34 * visibility);
-  strokeWeight(1);
+  stroke(ACID.r, ACID.g, ACID.b, 110 * visibility);
+  strokeWeight(1.4);
   const fiberIndex = selectedFiber;
   const stride = CONFIG.pointsPerFiber + 1;
   const offset = fiberIndex * stride * 3;
@@ -538,7 +576,7 @@ function renderTravellingParticles() {
       loopState.phase +
       0.035 * curvature * Math.sin(loopState.phase + base);
     renderParticleTrail(fiberIndex, t, colorValue, visibility);
-    renderParticle(fiberIndex, t, visibility, curvature);
+    renderParticle(fiberIndex, t, colorValue, visibility, curvature);
   }
   blendMode(BLEND);
 }
@@ -567,118 +605,19 @@ function renderParticleTrail(fiberIndex, headT, colorValue, visibility) {
   }
 }
 
-function renderParticle(fiberIndex, t, visibility, curvature) {
+function renderParticle(fiberIndex, t, colorValue, visibility, curvature) {
   calculateS3Point(fibers[fiberIndex], t, s3Point);
   if (!stereographicProject(s3Point, loopState.lambda, projectedPoint)) return;
   const size = CONFIG.particleSize * (0.9 + curvature * 0.3);
   push();
   translate(projectedPoint.x, projectedPoint.y, projectedPoint.z);
   noStroke();
-  fill(ACID.r, ACID.g, ACID.b, 32 * visibility);
+  noLights();
+  fill(colorValue.r, colorValue.g, colorValue.b, 32 * visibility);
   sphere(size * 2.5, 6, 4);
-  fill(ACID.r, ACID.g, ACID.b, 242 * visibility);
+  fill(colorValue.r, colorValue.g, colorValue.b, 242 * visibility);
   sphere(size, 7, 5);
   pop();
-}
-
-// ============================================================
-// 12. BASE SPHERE S^2 AND POINT-TO-FIBER RELATIONSHIP
-// ============================================================
-function renderBaseSphere() {
-  if (!CONFIG.showBaseSphere) return;
-  const visibility = Math.max(
-    modeMixes[MODES.HOPF_MAP],
-    modeMixes[MODES.SINGLE_FIBER] * 0.58,
-  );
-  if (visibility <= 0.01) return;
-
-  // A fixed secondary camera keeps the reference sphere in a safe margin.
-  camera(0, 0, CONFIG.cameraRadius, 0, 0, 0, 0, 1, 0);
-  push();
-  translate(CONFIG.baseSphereX, CONFIG.baseSphereY, 0);
-  drawBaseSphereGrid(visibility);
-  drawBaseSpherePoints(visibility);
-  drawMapConnector(visibility);
-  pop();
-}
-
-function drawBaseSphereGrid(visibility) {
-  const radius = CONFIG.baseSphereRadius;
-  noFill();
-  stroke(INK.r, INK.g, INK.b, 62 * visibility);
-  strokeWeight(1);
-  for (let lat = -2; lat <= 2; lat++) {
-    const v = lat / 3;
-    const y = v * radius;
-    const ringRadius = Math.sqrt(1 - v * v) * radius;
-    beginShape();
-    for (let i = 0; i <= 48; i++) {
-      const a = (TAU * i) / 48;
-      vertex(Math.cos(a) * ringRadius, y, Math.sin(a) * ringRadius);
-    }
-    endShape();
-  }
-  for (let longitude = 0; longitude < 6; longitude++) {
-    const a = (TAU * longitude) / 6;
-    beginShape();
-    for (let i = 0; i <= 48; i++) {
-      const t = (TAU * i) / 48;
-      vertex(
-        Math.cos(a) * Math.cos(t) * radius,
-        Math.sin(t) * radius,
-        Math.sin(a) * Math.cos(t) * radius,
-      );
-    }
-    endShape();
-  }
-}
-
-function drawBaseSpherePoints(visibility) {
-  const radius = CONFIG.baseSphereRadius;
-  for (let i = 0; i < CONFIG.fiberCount; i += 2) {
-    const offset = i * 3;
-    push();
-    translate(
-      baseSpherePoints[offset] * radius,
-      baseSpherePoints[offset + 1] * radius,
-      baseSpherePoints[offset + 2] * radius,
-    );
-    noStroke();
-    if (i === selectedFiber) {
-      fill(ACID.r, ACID.g, ACID.b, 250 * visibility);
-      sphere(7.5, 7, 5);
-    } else {
-      fill(CYAN.r, CYAN.g, CYAN.b, 145 * visibility);
-      sphere(3, 5, 4);
-    }
-    pop();
-  }
-
-  // The selected index may be odd and therefore absent from the half-density set.
-  if (selectedFiber % 2 !== 0) {
-    const offset = selectedFiber * 3;
-    push();
-    translate(
-      baseSpherePoints[offset] * radius,
-      baseSpherePoints[offset + 1] * radius,
-      baseSpherePoints[offset + 2] * radius,
-    );
-    noStroke();
-    fill(ACID.r, ACID.g, ACID.b, 250 * visibility);
-    sphere(7.5, 7, 5);
-    pop();
-  }
-}
-
-function drawMapConnector(visibility) {
-  const offset = selectedFiber * 3;
-  const radius = CONFIG.baseSphereRadius;
-  const px = baseSpherePoints[offset] * radius;
-  const py = baseSpherePoints[offset + 1] * radius;
-  const pz = baseSpherePoints[offset + 2] * radius;
-  stroke(ACID.r, ACID.g, ACID.b, 70 * visibility);
-  strokeWeight(1);
-  line(px, py, pz, -CONFIG.baseSphereX, -CONFIG.baseSphereY, 0);
 }
 
 // ============================================================
@@ -699,17 +638,38 @@ function createInterfaceLayers() {
 }
 
 function renderCentralGlow() {
+  const hero = heroMix();
   blendMode(ADD);
   noStroke();
   const breathe = 1 + 0.045 * Math.sin(loopState.phase);
   push();
   scale(breathe);
-  fill(CYAN.r, CYAN.g, CYAN.b, 4);
+  fill(CYAN.r, CYAN.g, CYAN.b, 10 + hero * 26);
   sphere(96, 16, 10);
-  fill(MAGENTA.r, MAGENTA.g, MAGENTA.b, 3);
+  fill(MAGENTA.r, MAGENTA.g, MAGENTA.b, 7 + hero * 18);
   sphere(58, 14, 9);
   pop();
   blendMode(BLEND);
+}
+
+const HUD_BOT_H = 480;
+const SAFE_TOP = 90;
+const SAFE_BOT = 60;
+
+// Ties the MODE readout's color to whichever palette color the scene is
+// actually featuring in that mode, instead of a flat neutral label.
+function modeReadoutColor() {
+  switch (loopState.activeMode) {
+    case MODES.LINKED_PAIR:
+      return `rgba(${MAGENTA.r},${MAGENTA.g},${MAGENTA.b},.86)`;
+    case MODES.PROJECTION:
+      return `rgba(${ACID.r},${ACID.g},${ACID.b},.86)`;
+    case MODES.SINGLE_FIBER:
+    case MODES.HOPF_MAP:
+    case MODES.FULL_FIBRATION:
+    default:
+      return `rgba(${CYAN.r},${CYAN.g},${CYAN.b},.86)`;
+  }
 }
 
 function renderSimulatorInterface() {
@@ -722,25 +682,29 @@ function renderSimulatorInterface() {
   context.textAlign = "left";
   context.font = `26px ${mono}`;
   context.fillStyle = "rgba(255,255,255,.92)";
-  context.fillText("HOPF FIBRATION", 72, 72);
+  context.fillText("HOPF FIBRATION", 72, 72 + SAFE_TOP);
   context.font = `18px ${mono}`;
   context.fillStyle = `rgba(${CYAN.r},${CYAN.g},${CYAN.b},.84)`;
-  context.fillText("S³ → S²", 72, 112);
+  context.fillText("S³ → S²", 72, 112 + SAFE_TOP);
 
-  context.textAlign = "right";
+  context.textAlign = "left";
   context.font = `16px ${mono}`;
   context.fillStyle = "rgba(255,255,255,.48)";
-  context.fillText(`FIBERS  ${CONFIG.fiberCount}`, W - 72, 72);
-  context.fillText(`MODE  ${MODE_NAMES[loopState.activeMode]}`, W - 72, 100);
-  context.fillText(`λ  ${loopState.lambda.toFixed(3)}`, W - 72, 128);
+  context.fillText(`FIBERS  ${CONFIG.fiberCount}`, 72, 150 + SAFE_TOP);
+  context.fillStyle = modeReadoutColor();
+  context.fillText(`MODE  ${MODE_NAMES[loopState.activeMode]}`, 72, 178 + SAFE_TOP);
+  context.fillStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},.72)`;
+  context.fillText(`λ  ${loopState.lambda.toFixed(3)}`, 72, 206 + SAFE_TOP);
 
+  const topRuleY = 232 + SAFE_TOP;
+  const footY = H - HUD_BOT_H;
   context.strokeStyle = "rgba(255,255,255,.12)";
   context.lineWidth = 1;
   context.beginPath();
-  context.moveTo(72, 154);
-  context.lineTo(W - 72, 154);
-  context.moveTo(72, H - 126);
-  context.lineTo(W - 72, H - 126);
+  context.moveTo(72, topRuleY);
+  context.lineTo(W - 72, topRuleY);
+  context.moveTo(72, footY);
+  context.lineTo(W - 72, footY);
   context.stroke();
 
   context.textAlign = "center";
@@ -749,7 +713,7 @@ function renderSimulatorInterface() {
   context.fillText(
     "(X,Y,Z) = (x₁,x₂,x₃) / (1 − λx₄)",
     W / 2,
-    H - 96,
+    footY - SAFE_BOT,
   );
   context.restore();
 
@@ -792,6 +756,14 @@ function applyLoopingCamera() {
 // ============================================================
 function modeEnvelope(startIn, endIn, startOut, endOut, t) {
   return smoothStep(startIn, endIn, t) * (1 - smoothStep(startOut, endOut, t));
+}
+
+// Peaks at t=0 and t=1 (loop wrap), floor at t=0.5 — integer k=1 cosine, so
+// the hero state is both the strongest frame AND identical at both loop
+// ends. This puts the best-looking state in the first half-second and lets
+// the final transition land back on itself.
+function heroMix() {
+  return 0.5 + 0.5 * Math.cos(loopState.phase);
 }
 
 function updateAutomaticTimeline(frameIndex) {
@@ -887,7 +859,6 @@ function renderScene() {
   drawingContext.depthFunc(drawingContext.LESS);
   pop();
 
-  renderBaseSphere();
   renderSimulatorInterface();
 }
 
