@@ -342,28 +342,28 @@ function drawScreenFinish() {
   g.textAlign(CENTER, CENTER);
   g.textStyle(BOLD);
   g.fill(INK_R, INK_G, INK_B, 246);
-  g.textSize(39);
+  g.textSize(48);
   g.text("EVERY CIRCLE LINKS EVERY OTHER.", W * 0.5, 250);
 
   g.textStyle(NORMAL);
   g.fill(INK_R, INK_G, INK_B, 146);
-  g.textSize(20);
+  g.textSize(32);
   g.text("S³  →  S²    ·    π : S³ \\ {N}  →  ℝ³", W * 0.5, 305);
 
   g.textAlign(LEFT, TOP);
   g.fill(INK_R, INK_G, INK_B, 78);
-  g.textSize(11);
+  g.textSize(22);
   g.text("FIBER      t ↦ (z₁, z₂)", 70, 386);
-  g.text("z₁         eⁱᵗ cos(η)", 70, 409);
-  g.text("z₂         eⁱ⁽ᵗ⁺δ⁾ sin(η)", 70, 432);
+  g.text("z₁         eⁱᵗ cos(η)", 70, 423);
+  g.text("z₂         eⁱ⁽ᵗ⁺δ⁾ sin(η)", 70, 460);
 
   g.textAlign(RIGHT, TOP);
   g.text("BASE       (η, δ) ∈ S²", W - 70, 386);
-  g.text("LINKING    Lk(Fᵢ, Fⱼ) = 1", W - 70, 409);
-  g.text("PROJECT    (x₁,y₁,x₂)/(1−y₂)", W - 70, 432);
+  g.text("LINKING    Lk(Fᵢ, Fⱼ) = 1", W - 70, 423);
+  g.text("PROJECT    (x₁,y₁,x₂)/(1−y₂)", W - 70, 460);
 
   g.fill(INK_R, INK_G, INK_B, 42);
-  g.textSize(10);
+  g.textSize(16);
   g.textAlign(LEFT, BOTTOM);
   g.text(W + "×" + H + " · " + FPS + "fps", 52, H - 52);
   g.textAlign(RIGHT, BOTTOM);
