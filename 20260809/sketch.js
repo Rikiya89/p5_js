@@ -12,45 +12,38 @@ const MAX_FRAMES = FPS * MAX_DURATION,
 const TAU = Math.PI * 2;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-const MODES = {
-  FULL_FIBRATION: 0,
-  SINGLE_FIBER: 1,
-  LINKED_PAIR: 2,
-  HOPF_MAP: 3,
-  PROJECTION: 4,
-};
-const MODE_NAMES = [
-  "FULL FIBRATION",
-  "SINGLE FIBER",
-  "LINKED PAIR",
-  "HOPF MAP",
-  "PROJECTION",
-];
-
 // ============================================================
 // 2. CENTRAL CONFIGURATION
 // ============================================================
 const CONFIG = {
-  fiberCount: 64,
-  pointsPerFiber: 168,
-  structureScale: 218,
+  pointCount: 900,
+  sphereScale: 420,
+  vectorLengthScale: 148,
+  vectorLengthMin: 0.08,
 
-  projectionBase: 0.82,
-  projectionAmplitude: 0.07,
-  projectionMin: 0.68,
-  projectionMax: 0.92,
-  projectionEpsilon: 0.001,
-  maxProjectionRadius: 7,
+  fieldA: 1.0, // constant-term amplitude
+  fieldB: 0.55, // rotational-term amplitude (ω × p, tangent by construction)
+  // Field phase offset + counter-rotating camera: chosen so a singularity
+  // faces the camera at the loop's hero frame and remains strongly visible.
+  fieldPhi0: (270 * Math.PI) / 180,
 
-  baseLineWeight: 1.05,
-  glowLineWeight: 6.5,
-  coreAlpha: 188,
-  secondaryAlpha: 62,
-  selectedAlpha: 255,
+  zeroThresholdFrac: 0.08, // relative to that frame's max |v_tangent|
+  newtonIters: 3, // per-frame refinement (seed pass uses 8)
+  newtonSeedIters: 8,
+  newtonFDStep: 1e-4,
+  newtonMaxStep: 0.25,
 
-  travellingParticleCount: 12,
-  particleSize: 6,
-  trailLength: 8,
+  baseAlpha: 220,
+  frontDepthMin: 0.16,
+  baseWeight: 1.1,
+  glowAlpha: 20,
+  glowWeight: 4.2,
+  flowStride: 13,
+  flowPointSize: 5.6,
+  probeVectorScale: 210,
+
+  singularityRadius: 9,
+  singularityRingCount: 3,
 
   cameraRadius: 1480,
   cameraRadiusVariation: 34,
@@ -58,13 +51,7 @@ const CONFIG = {
   cameraHeightVariation: 52,
   cameraStartAngle: -0.55,
 
-  selectedFiber: 13,
-  linkedPair: [32, 36],
   showInterface: true,
-  showProjectionGuides: true,
-
-  heroBandCenter: 0.6,
-  heroBandHalfWidth: 0.12,
 };
 
 // ============================================================
@@ -85,7 +72,8 @@ let canvasEl, hudPg, vignettePg;
 let muxer = null,
   encoder = null,
   isRecording = false,
-  recFrameCount = 0;
+  recFrameCount = 0,
+  recordingStartFrame = 0;
 let paused = false,
   frozenFrame = 0;
 let isDragging = false,
@@ -94,534 +82,750 @@ let isDragging = false,
 let userYaw = 0,
   userPitch = 0,
   userZoomOffset = 0;
-
-// ============================================================
-// 5. SIMULATOR STATE
-// ============================================================
-let autoMode = true;
-let manualMode = MODES.FULL_FIBRATION;
-let selectedFiber = CONFIG.selectedFiber;
-let manualLambda = CONFIG.projectionBase;
 let showInterface = CONFIG.showInterface;
 
 const loopState = {
   loopT: 0,
   phase: 0,
-  lambda: CONFIG.projectionBase,
   cameraAngle: CONFIG.cameraStartAngle,
   cameraRadius: CONFIG.cameraRadius,
   cameraHeight: CONFIG.cameraHeight,
   viewX: 0,
   viewY: 0,
   viewZ: 1,
-  activeMode: MODES.FULL_FIBRATION,
 };
-const modeMixes = new Float32Array(5);
+
+const EXPLANATION_STAGES = [
+  "1  SOURCE VECTOR",
+  "2  REMOVE NORMAL",
+  "3  TANGENT RESULT",
+  "4  ZERO REMAINS",
+];
+
+const EXPLANATION_FORMULAS = [
+  `v(p,t) = ĉ(t) + ${CONFIG.fieldB.toFixed(2)}[ω̂(t) × p]`,
+  "vᴛ = v − n(v · n)",
+  "n · vᴛ = 0    (tangent to S²)",
+  "min p∈S²  |vᴛ(p)| = 0",
+];
+
+const EXPLANATION_HELP = [
+  "START WITH A SMOOTH 3D VECTOR",
+  "SUBTRACT THE PART POINTING THROUGH THE SPHERE",
+  "THE REMAINDER LIES FLAT ON THE SURFACE",
+  "THE FIELD MUST VANISH SOMEWHERE",
+];
+
+const probeState = {
+  x: 0,
+  y: 0,
+  z: 1,
+  sourceX: 0,
+  sourceY: 0,
+  sourceZ: 0,
+  normalX: 0,
+  normalY: 0,
+  normalZ: 0,
+  tangentX: 0,
+  tangentY: 0,
+  tangentZ: 0,
+  sourceMagnitude: 0,
+  normalMagnitude: 0,
+  tangentMagnitude: 0,
+  stage: 0,
+};
 
 // ============================================================
-// 6. FIBER DATA INITIALIZATION
+// 5. SPHERE POINT DATA (STATIC — Fibonacci distribution)
 // ============================================================
-const fibers = [];
-let baseSpherePoints;
-let fiberPositions;
-let fiberValid;
-let fiberCurvature;
-let fiberCentroids;
-const s3Point = { x1: 0, x2: 0, x3: 0, x4: 0 };
-const projectedPoint = { x: 0, y: 0, z: 0 };
-const hopfPoint = { x: 0, y: 0, z: 0 };
+let spherePositions; // Float32Array [x,y,z] * pointCount, unit sphere
+let tangentBuffer; // Float32Array [vx,vy,vz] * pointCount, scratch per-frame
+let magnitudeBuffer; // Float32Array, |v_tangent| per point, scratch per-frame
 
-function initializeSimulator() {
-  generateBaseSpherePoints();
-  createFiberParameters();
-  const stride = CONFIG.pointsPerFiber + 1;
-  fiberPositions = new Float32Array(CONFIG.fiberCount * stride * 3);
-  fiberValid = new Uint8Array(CONFIG.fiberCount * stride);
-  fiberCurvature = new Float32Array(CONFIG.fiberCount * stride);
-  fiberCentroids = new Float32Array(CONFIG.fiberCount * 3);
-}
-
-function generateBaseSpherePoints() {
-  baseSpherePoints = new Float32Array(CONFIG.fiberCount * 3);
-  for (let i = 0; i < CONFIG.fiberCount; i++) {
-    const y = 1 - (2 * (i + 0.5)) / CONFIG.fiberCount;
+function generateSpherePoints() {
+  spherePositions = new Float32Array(CONFIG.pointCount * 3);
+  for (let i = 0; i < CONFIG.pointCount; i++) {
+    const y = 1 - (2 * (i + 0.5)) / CONFIG.pointCount;
     const radius = Math.sqrt(Math.max(0, 1 - y * y));
     const theta = i * GOLDEN_ANGLE;
     const offset = i * 3;
-    baseSpherePoints[offset] = radius * Math.cos(theta);
-    baseSpherePoints[offset + 1] = y;
-    baseSpherePoints[offset + 2] = radius * Math.sin(theta);
+    spherePositions[offset] = radius * Math.cos(theta);
+    spherePositions[offset + 1] = y;
+    spherePositions[offset + 2] = radius * Math.sin(theta);
   }
-}
-
-function createFiberParameters() {
-  for (let i = 0; i < CONFIG.fiberCount; i++) {
-    const offset = i * 3;
-    const hx = baseSpherePoints[offset];
-    const hy = baseSpherePoints[offset + 1];
-    const hz = baseSpherePoints[offset + 2];
-
-    // Invert H=(sin(2eta)cos(delta), sin(2eta)sin(delta), cos(2eta)).
-    const eta = 0.5 * Math.acos(clamp(hz, -1, 1));
-    const delta = Math.atan2(hy, hx);
-    const fiber = {
-      eta,
-      xi1: delta * 0.5,
-      xi2: -delta * 0.5,
-      cosEta: Math.cos(eta),
-      sinEta: Math.sin(eta),
-      hx,
-      hy,
-      hz,
-    };
-    // Recalculate the base point with the forward Hopf map. This makes the
-    // displayed S² association depend on the same S³ fiber used for rendering.
-    calculateS3Point(fiber, 0, s3Point);
-    calculateHopfMap(s3Point, hopfPoint);
-    fiber.hx = hopfPoint.x;
-    fiber.hy = hopfPoint.y;
-    fiber.hz = hopfPoint.z;
-    baseSpherePoints[offset] = hopfPoint.x;
-    baseSpherePoints[offset + 1] = hopfPoint.y;
-    baseSpherePoints[offset + 2] = hopfPoint.z;
-    fibers.push(fiber);
-  }
+  tangentBuffer = new Float32Array(CONFIG.pointCount * 3);
+  magnitudeBuffer = new Float32Array(CONFIG.pointCount);
 }
 
 // ============================================================
-// 7. HOPF MATHEMATICS ON S^3
+// 6. HAIRY BALL VECTOR FIELD
 // ============================================================
-function calculateS3Point(fiber, t, out) {
-  const a = fiber.xi1 + t;
-  const b = fiber.xi2 + t;
-  out.x1 = fiber.cosEta * Math.cos(a);
-  out.x2 = fiber.cosEta * Math.sin(a);
-  out.x3 = fiber.sinEta * Math.cos(b);
-  out.x4 = fiber.sinEta * Math.sin(b);
-  return out;
+// v(p) = A·ĉ(phase) + B·(ω(phase) × p), then projected tangent to the
+// sphere at p. The rotational term is automatically tangent (cross product
+// with position is always ⊥ p), so only the constant term needs projection.
+function fieldConstant(phase, out) {
+  const p = phase + CONFIG.fieldPhi0;
+  const x = Math.cos(p),
+    y = 0.25 * Math.sin(2 * p),
+    z = Math.sin(p);
+  const inv = 1 / (Math.hypot(x, y, z) || 1);
+  out[0] = x * inv;
+  out[1] = y * inv;
+  out[2] = z * inv;
 }
 
-// ============================================================
-// 8. STEREOGRAPHIC PROJECTION S^3 -> R^3
-// ============================================================
-function stereographicProject(point4, lambda, out) {
-  let denominator = 1 - lambda * point4.x4;
-  if (Math.abs(denominator) < CONFIG.projectionEpsilon) {
-    denominator =
-      denominator < 0
-        ? -CONFIG.projectionEpsilon
-        : CONFIG.projectionEpsilon;
-  }
-
-  const x = point4.x1 / denominator;
-  const y = point4.x2 / denominator;
-  const z = point4.x3 / denominator;
-  const radius = Math.hypot(x, y, z);
-  if (!Number.isFinite(radius) || radius > CONFIG.maxProjectionRadius) {
-    return false;
-  }
-
-  out.x = x * CONFIG.structureScale;
-  out.y = y * CONFIG.structureScale;
-  out.z = z * CONFIG.structureScale;
-  return true;
+function fieldOmega(phase, out) {
+  const p = phase + CONFIG.fieldPhi0;
+  const x = 0.2 * (1 + 0.3 * Math.sin(p)),
+    y = 1,
+    z = 0.15 * Math.cos(p) * (1 + 0.3 * Math.sin(p));
+  const inv = 1 / (Math.hypot(x, y, z) || 1);
+  out[0] = x * inv;
+  out[1] = y * inv;
+  out[2] = z * inv;
 }
 
-// ============================================================
-// 9. HOPF MAP S^3 -> S^2
-// ============================================================
-function calculateHopfMap(point4, out) {
-  out.x = 2 * (point4.x1 * point4.x3 + point4.x2 * point4.x4);
-  out.y = 2 * (point4.x2 * point4.x3 - point4.x1 * point4.x4);
-  out.z =
-    point4.x1 * point4.x1 +
-    point4.x2 * point4.x2 -
-    point4.x3 * point4.x3 -
-    point4.x4 * point4.x4;
-  return out;
+const _c = [0, 0, 0],
+  _w = [0, 0, 0];
+
+// Writes tangent vector for point p (unit vector) at phase into out.
+// Original (unremapped) magnitude preserved — used later for singularity
+// detection before any display-length remapping.
+function tangentFieldAt(px, py, pz, phase, out) {
+  fieldConstant(phase, _c);
+  fieldOmega(phase, _w);
+  const rx = _w[1] * pz - _w[2] * py;
+  const ry = _w[2] * px - _w[0] * pz;
+  const rz = _w[0] * py - _w[1] * px;
+  const vx = CONFIG.fieldA * _c[0] + CONFIG.fieldB * rx;
+  const vy = CONFIG.fieldA * _c[1] + CONFIG.fieldB * ry;
+  const vz = CONFIG.fieldA * _c[2] + CONFIG.fieldB * rz;
+  const vn = vx * px + vy * py + vz * pz;
+  out[0] = vx - px * vn;
+  out[1] = vy - py * vn;
+  out[2] = vz - pz * vn;
 }
 
-function sampleFiber(fiberIndex) {
-  const pointCount = CONFIG.pointsPerFiber;
-  const stride = pointCount + 1;
-  const fiberOffset = fiberIndex * stride;
-  const positionOffset = fiberOffset * 3;
-  const fiber = fibers[fiberIndex];
-  let sumX = 0,
-    sumY = 0,
-    sumZ = 0,
-    validCount = 0;
-
-  for (let pi = 0; pi <= pointCount; pi++) {
-    const t = (TAU * pi) / pointCount;
-    calculateS3Point(fiber, t, s3Point);
-    const valid = stereographicProject(s3Point, loopState.lambda, projectedPoint);
-    const sampleIndex = fiberOffset + pi;
-    fiberValid[sampleIndex] = valid ? 1 : 0;
-    const target = positionOffset + pi * 3;
-
-    if (valid) {
-      fiberPositions[target] = projectedPoint.x;
-      fiberPositions[target + 1] = projectedPoint.y;
-      fiberPositions[target + 2] = projectedPoint.z;
-      sumX += projectedPoint.x;
-      sumY += projectedPoint.y;
-      sumZ += projectedPoint.z;
-      validCount++;
-    }
-  }
-
-  const centroidOffset = fiberIndex * 3;
-  const inv = 1 / Math.max(1, validCount);
-  fiberCentroids[centroidOffset] = sumX * inv;
-  fiberCentroids[centroidOffset + 1] = sumY * inv;
-  fiberCentroids[centroidOffset + 2] = sumZ * inv;
-  estimateFiberCurvature(fiberIndex);
-}
-
-function estimateFiberCurvature(fiberIndex) {
-  const pointCount = CONFIG.pointsPerFiber;
-  const stride = pointCount + 1;
-  const fiberOffset = fiberIndex * stride;
-  const positionOffset = fiberOffset * 3;
-
-  for (let pi = 0; pi < pointCount; pi++) {
-    const prev = (pi - 1 + pointCount) % pointCount;
-    const next = (pi + 1) % pointCount;
-    const a = positionOffset + prev * 3;
-    const b = positionOffset + pi * 3;
-    const c = positionOffset + next * 3;
-    const ax = fiberPositions[b] - fiberPositions[a];
-    const ay = fiberPositions[b + 1] - fiberPositions[a + 1];
-    const az = fiberPositions[b + 2] - fiberPositions[a + 2];
-    const bx = fiberPositions[c] - fiberPositions[b];
-    const by = fiberPositions[c + 1] - fiberPositions[b + 1];
-    const bz = fiberPositions[c + 2] - fiberPositions[b + 2];
-    const invA = 1 / Math.max(1e-6, Math.hypot(ax, ay, az));
-    const invB = 1 / Math.max(1e-6, Math.hypot(bx, by, bz));
-    const dot = clamp(
-      (ax * bx + ay * by + az * bz) * invA * invB,
-      -1,
-      1,
+function updateFieldBuffers(phase) {
+  let maxMag = 0;
+  for (let i = 0; i < CONFIG.pointCount; i++) {
+    const o = i * 3;
+    tangentFieldAt(
+      spherePositions[o],
+      spherePositions[o + 1],
+      spherePositions[o + 2],
+      phase,
+      _tmpV,
     );
-    fiberCurvature[fiberOffset + pi] = Math.sqrt(Math.max(0, 1 - dot * dot));
+    tangentBuffer[o] = _tmpV[0];
+    tangentBuffer[o + 1] = _tmpV[1];
+    tangentBuffer[o + 2] = _tmpV[2];
+    const m = Math.hypot(_tmpV[0], _tmpV[1], _tmpV[2]);
+    magnitudeBuffer[i] = m;
+    if (m > maxMag) maxMag = m;
   }
-  fiberCurvature[fiberOffset + pointCount] = fiberCurvature[fiberOffset];
+  return maxMag;
 }
+const _tmpV = [0, 0, 0];
 
-function updateFiberBuffers() {
-  for (let fi = 0; fi < CONFIG.fiberCount; fi++) sampleFiber(fi);
+function updateProbeState() {
+  const rightX = loopState.viewZ;
+  const rightZ = -loopState.viewX;
+  let px = loopState.viewX + rightX * 0.72;
+  let py = loopState.viewY - 0.36;
+  let pz = loopState.viewZ + rightZ * 0.72;
+  const pinv = 1 / (Math.hypot(px, py, pz) || 1);
+  px *= pinv;
+  py *= pinv;
+  pz *= pinv;
+
+  fieldConstant(loopState.phase, _c);
+  fieldOmega(loopState.phase, _w);
+  const rx = _w[1] * pz - _w[2] * py;
+  const ry = _w[2] * px - _w[0] * pz;
+  const rz = _w[0] * py - _w[1] * px;
+  const sourceX = CONFIG.fieldA * _c[0] + CONFIG.fieldB * rx;
+  const sourceY = CONFIG.fieldA * _c[1] + CONFIG.fieldB * ry;
+  const sourceZ = CONFIG.fieldA * _c[2] + CONFIG.fieldB * rz;
+  const normalScalar = sourceX * px + sourceY * py + sourceZ * pz;
+  const normalX = px * normalScalar;
+  const normalY = py * normalScalar;
+  const normalZ = pz * normalScalar;
+  const tangentX = sourceX - normalX;
+  const tangentY = sourceY - normalY;
+  const tangentZ = sourceZ - normalZ;
+
+  probeState.x = px;
+  probeState.y = py;
+  probeState.z = pz;
+  probeState.sourceX = sourceX;
+  probeState.sourceY = sourceY;
+  probeState.sourceZ = sourceZ;
+  probeState.normalX = normalX;
+  probeState.normalY = normalY;
+  probeState.normalZ = normalZ;
+  probeState.tangentX = tangentX;
+  probeState.tangentY = tangentY;
+  probeState.tangentZ = tangentZ;
+  probeState.sourceMagnitude = Math.hypot(sourceX, sourceY, sourceZ);
+  probeState.normalMagnitude = Math.hypot(normalX, normalY, normalZ);
+  probeState.tangentMagnitude = Math.hypot(tangentX, tangentY, tangentZ);
+  probeState.stage = Math.min(3, Math.floor(loopState.loopT * 4));
 }
 
 // ============================================================
-// 10. FIBER RENDERING AND DEPTH TREATMENT
+// 7. SINGULARITY TRACKING (Newton's method in local tangent basis)
 // ============================================================
-function fiberDepthBrightness(fiberIndex) {
-  const offset = fiberIndex * 3;
-  const depth =
-    fiberCentroids[offset] * loopState.viewX +
-    fiberCentroids[offset + 1] * loopState.viewY +
-    fiberCentroids[offset + 2] * loopState.viewZ;
-  return map(clamp(depth, -260, 260), -260, 260, 0.42, 1);
+// Two singularities exist naturally (Poincaré–Hopf: index sum over S² = 2).
+// Tracked precisely frame-to-frame rather than snapped to render points, so
+// they read as genuine field zeros, not an artificially placed marker.
+const singularities = [
+  { x: 0, y: 0, z: 0 },
+  { x: 0, y: 0, z: 0 },
+];
+let singularitiesSeeded = false;
+
+function localBasis(px, py, pz, out1, out2) {
+  const upx = Math.abs(py) < 0.9 ? 0 : 1,
+    upy = Math.abs(py) < 0.9 ? 1 : 0,
+    upz = 0;
+  let e1x = upy * pz - upz * py,
+    e1y = upz * px - upx * pz,
+    e1z = upx * py - upy * px;
+  const e1inv = 1 / (Math.hypot(e1x, e1y, e1z) || 1);
+  e1x *= e1inv;
+  e1y *= e1inv;
+  e1z *= e1inv;
+  const e2x = py * e1z - pz * e1y,
+    e2y = pz * e1x - px * e1z,
+    e2z = px * e1y - py * e1x;
+  out1[0] = e1x;
+  out1[1] = e1y;
+  out1[2] = e1z;
+  out2[0] = e2x;
+  out2[1] = e2y;
+  out2[2] = e2z;
 }
 
-function renderFiberPath(fiberIndex, colorValue, alpha, weight) {
-  const pointCount = CONFIG.pointsPerFiber;
-  const stride = pointCount + 1;
-  const sampleOffset = fiberIndex * stride;
-  let positionOffset = sampleOffset * 3;
-  let shapeOpen = false;
+const _e1 = [0, 0, 0],
+  _e2 = [0, 0, 0],
+  _fu = [0, 0, 0],
+  _fv = [0, 0, 0];
 
-  noFill();
-  stroke(colorValue.r, colorValue.g, colorValue.b, alpha);
-  strokeWeight(weight);
-  for (let pi = 0; pi <= pointCount; pi++) {
-    if (fiberValid[sampleOffset + pi]) {
-      if (!shapeOpen) {
-        beginShape();
-        shapeOpen = true;
-      }
-      vertex(
-        fiberPositions[positionOffset],
-        fiberPositions[positionOffset + 1],
-        fiberPositions[positionOffset + 2],
-      );
-    } else if (shapeOpen) {
-      endShape();
-      shapeOpen = false;
-    }
-    positionOffset += 3;
+function newtonStep(pt, phase, h, maxStep) {
+  localBasis(pt.x, pt.y, pt.z, _e1, _e2);
+  tangentFieldAt(pt.x, pt.y, pt.z, phase, _tmpV);
+  const f0e1 = _tmpV[0] * _e1[0] + _tmpV[1] * _e1[1] + _tmpV[2] * _e1[2];
+  const f0e2 = _tmpV[0] * _e2[0] + _tmpV[1] * _e2[1] + _tmpV[2] * _e2[2];
+
+  let ux = pt.x + _e1[0] * h,
+    uy = pt.y + _e1[1] * h,
+    uz = pt.z + _e1[2] * h;
+  let uinv = 1 / (Math.hypot(ux, uy, uz) || 1);
+  tangentFieldAt(ux * uinv, uy * uinv, uz * uinv, phase, _fu);
+
+  let vx = pt.x + _e2[0] * h,
+    vy = pt.y + _e2[1] * h,
+    vz = pt.z + _e2[2] * h;
+  let vinv = 1 / (Math.hypot(vx, vy, vz) || 1);
+  tangentFieldAt(vx * vinv, vy * vinv, vz * vinv, phase, _fv);
+
+  const fue1 = _fu[0] * _e1[0] + _fu[1] * _e1[1] + _fu[2] * _e1[2];
+  const fue2 = _fu[0] * _e2[0] + _fu[1] * _e2[1] + _fu[2] * _e2[2];
+  const fve1 = _fv[0] * _e1[0] + _fv[1] * _e1[1] + _fv[2] * _e1[2];
+  const fve2 = _fv[0] * _e2[0] + _fv[1] * _e2[1] + _fv[2] * _e2[2];
+
+  const j11 = (fue1 - f0e1) / h,
+    j21 = (fue2 - f0e2) / h;
+  const j12 = (fve1 - f0e1) / h,
+    j22 = (fve2 - f0e2) / h;
+  const det = j11 * j22 - j12 * j21;
+  if (Math.abs(det) < 1e-9) return;
+
+  let du = (j22 * f0e1 - j12 * f0e2) / det;
+  let dv = (j11 * f0e2 - j21 * f0e1) / det;
+  const mag = Math.hypot(du, dv);
+  if (mag > maxStep) {
+    const s = maxStep / mag;
+    du *= s;
+    dv *= s;
   }
-  if (shapeOpen) endShape();
+  const nx = pt.x - _e1[0] * du - _e2[0] * dv;
+  const ny = pt.y - _e1[1] * du - _e2[1] * dv;
+  const nz = pt.z - _e1[2] * du - _e2[2] * dv;
+  const ninv = 1 / (Math.hypot(nx, ny, nz) || 1);
+  pt.x = nx * ninv;
+  pt.y = ny * ninv;
+  pt.z = nz * ninv;
 }
 
-function renderFiberGlow(fiberIndex, colorValue, visibility) {
-  const depth = fiberDepthBrightness(fiberIndex);
-  const selectedAlpha = CONFIG.selectedAlpha * visibility * depth;
-  renderFiberPath(
-    fiberIndex,
-    colorValue,
-    selectedAlpha * 0.045,
-    CONFIG.glowLineWeight * 2.2,
-  );
-  renderFiberPath(
-    fiberIndex,
-    colorValue,
-    selectedAlpha * 0.2,
-    CONFIG.glowLineWeight,
-  );
-  renderFiberPath(
-    fiberIndex,
-    colorValue,
-    selectedAlpha,
-    CONFIG.baseLineWeight * 2.35,
-  );
-  renderCurvatureCore(fiberIndex, selectedAlpha);
-}
-
-const CURVATURE_BUCKETS = 4;
-
-// Quantizing curvature into a handful of buckets lets segments with similar
-// curvature share one stroke()/strokeWeight() state instead of re-issuing
-// both WebGL state changes per segment (168 per fiber) — same visual
-// gradation, far fewer state transitions per frame.
-function renderCurvatureCore(fiberIndex, alpha) {
-  const pointCount = CONFIG.pointsPerFiber;
-  const stride = pointCount + 1;
-  const sampleOffset = fiberIndex * stride;
-  const positionOffset = sampleOffset * 3;
-
-  for (let bucket = 0; bucket < CURVATURE_BUCKETS; bucket++) {
-    const bucketT = bucket / (CURVATURE_BUCKETS - 1);
-    let strokeSet = false;
-    for (let pi = 0; pi < pointCount; pi++) {
-      if (!fiberValid[sampleOffset + pi] || !fiberValid[sampleOffset + pi + 1]) {
-        continue;
-      }
-      const curvature = clamp(fiberCurvature[sampleOffset + pi] * 15, 0, 1);
-      const pointBucket = Math.min(
-        CURVATURE_BUCKETS - 1,
-        Math.floor(curvature * CURVATURE_BUCKETS),
-      );
-      if (pointBucket !== bucket) continue;
-      if (!strokeSet) {
-        stroke(INK.r, INK.g, INK.b, alpha * (0.22 + bucketT * 0.34));
-        strokeWeight(0.65 + bucketT * 0.4);
-        strokeSet = true;
-      }
-      const a = positionOffset + pi * 3;
-      const b = a + 3;
-      line(
-        fiberPositions[a],
-        fiberPositions[a + 1],
-        fiberPositions[a + 2],
-        fiberPositions[b],
-        fiberPositions[b + 1],
-        fiberPositions[b + 2],
-      );
+function coarseSeedSingularities(phase) {
+  const nTheta = 48,
+    nPhi = 96;
+  let best = [];
+  for (let i = 0; i < nTheta; i++) {
+    const theta = (Math.PI * (i + 0.5)) / nTheta;
+    const st = Math.sin(theta),
+      ct = Math.cos(theta);
+    for (let j = 0; j < nPhi; j++) {
+      const phi = (TAU * j) / nPhi;
+      const px = st * Math.cos(phi),
+        py = ct,
+        pz = st * Math.sin(phi);
+      tangentFieldAt(px, py, pz, phase, _tmpV);
+      best.push([Math.hypot(_tmpV[0], _tmpV[1], _tmpV[2]), px, py, pz]);
     }
   }
-}
-
-function focusStrength() {
-  return Math.max(
-    modeMixes[MODES.SINGLE_FIBER],
-    modeMixes[MODES.LINKED_PAIR],
-    modeMixes[MODES.HOPF_MAP],
-  );
-}
-
-function isFocusedFiber(fiberIndex) {
-  let strength = 0;
-  if (fiberIndex === selectedFiber) {
-    strength = Math.max(
-      modeMixes[MODES.SINGLE_FIBER],
-      modeMixes[MODES.HOPF_MAP],
-    );
+  best.sort((a, b) => a[0] - b[0]);
+  const picks = [best[0]];
+  for (const cand of best) {
+    const dp = cand[1] * picks[0][1] + cand[2] * picks[0][2] + cand[3] * picks[0][3];
+    if (dp < Math.cos(0.5)) {
+      picks.push(cand);
+      break;
+    }
   }
-  if (
-    fiberIndex === CONFIG.linkedPair[0] ||
-    fiberIndex === CONFIG.linkedPair[1]
-  ) {
-    strength = Math.max(strength, modeMixes[MODES.LINKED_PAIR]);
+  for (let k = 0; k < 2 && k < picks.length; k++) {
+    singularities[k].x = picks[k][1];
+    singularities[k].y = picks[k][2];
+    singularities[k].z = picks[k][3];
+    for (let it = 0; it < CONFIG.newtonSeedIters; it++) {
+      newtonStep(singularities[k], phase, CONFIG.newtonFDStep, CONFIG.newtonMaxStep);
+    }
   }
-  return strength;
+  singularitiesSeeded = true;
 }
 
-// A band of near-equal eta traces a single coherent torus (constant-latitude
-// family on the base S^2), unlike an index-based scatter which has no
-// geometric relationship to the fibers it picks.
-function isHeroBandFiber(fiberIndex) {
+function trackSingularities(phase) {
+  if (!singularitiesSeeded) {
+    coarseSeedSingularities(phase);
+    return;
+  }
+  for (let k = 0; k < singularities.length; k++) {
+    for (let it = 0; it < CONFIG.newtonIters; it++) {
+      newtonStep(singularities[k], phase, CONFIG.newtonFDStep, CONFIG.newtonMaxStep);
+    }
+  }
+}
+
+// ============================================================
+// 8. RENDERING
+// ============================================================
+function depthBrightness(px, py, pz) {
+  const depth = px * loopState.viewX + py * loopState.viewY + pz * loopState.viewZ;
+  const facing = (clamp(depth, -1, 1) + 1) * 0.5;
   return (
-    Math.abs(fibers[fiberIndex].eta - CONFIG.heroBandCenter) <
-    CONFIG.heroBandHalfWidth
+    CONFIG.frontDepthMin +
+    (1 - CONFIG.frontDepthMin) * Math.pow(facing, 1.75)
   );
 }
 
-function renderFullFibration() {
-  const dim = 1 - focusStrength() * 0.6;
-  const projectionLift = modeMixes[MODES.PROJECTION] * 0.18;
-  const hero = heroMix();
-
-  for (let fi = 0; fi < CONFIG.fiberCount; fi++) {
-    const depth = fiberDepthBrightness(fi);
-    const selected = isFocusedFiber(fi);
-    const isPrimaryGroup = isHeroBandFiber(fi);
-    const groupColor = isPrimaryGroup ? CYAN : INK;
-    const heroLift = isPrimaryGroup ? hero * 1.6 : 0;
-    const alpha =
-      CONFIG.secondaryAlpha *
-      depth *
-      (dim + selected * 0.2 + projectionLift + heroLift) *
-      (isPrimaryGroup ? 2.75 : 1);
-    renderFiberPath(
-      fi,
-      groupColor,
-      alpha,
-      CONFIG.baseLineWeight * (isPrimaryGroup ? 1.22 : 1),
-    );
-    if (isPrimaryGroup && hero > 0.01) {
-      renderFiberPath(
-        fi,
-        groupColor,
-        alpha * 0.16 * hero,
-        CONFIG.glowLineWeight * hero,
-      );
-    }
-  }
+function fieldStageVisibility() {
+  return [0.88, 0.88, 0.94, 1][probeState.stage];
 }
 
-function prepareSelectedLayer() {
-  drawingContext.clear(drawingContext.DEPTH_BUFFER_BIT);
-  drawingContext.depthFunc(drawingContext.LEQUAL);
-}
-
-function renderSingleFiber() {
-  const visibility = modeMixes[MODES.SINGLE_FIBER];
-  if (visibility <= 0.001) return;
-  renderFiberGlow(selectedFiber, CYAN, visibility);
-}
-
-function renderLinkedPair() {
-  const visibility = modeMixes[MODES.LINKED_PAIR];
-  if (visibility <= 0.001) return;
-  renderFiberGlow(CONFIG.linkedPair[0], CYAN, visibility);
-  renderFiberGlow(CONFIG.linkedPair[1], MAGENTA, visibility);
-}
-
-function renderHopfMapMode() {
-  const visibility = modeMixes[MODES.HOPF_MAP];
-  if (visibility <= 0.001) return;
-  renderFiberGlow(selectedFiber, CYAN, visibility);
-}
-
-function renderProjectionMode() {
-  const visibility = modeMixes[MODES.PROJECTION];
-  if (visibility <= 0.001) return;
-  let shown = 0;
-  for (let fi = 0; fi < CONFIG.fiberCount && shown < 4; fi++) {
-    if (!isHeroBandFiber(fi)) continue;
-    renderFiberGlow(fi, shown % 2 ? ACID : CYAN, visibility * 0.42);
-    shown++;
-  }
-  if (CONFIG.showProjectionGuides) renderProjectionGuides(visibility);
-}
-
-function renderProjectionGuides(visibility) {
-  noFill();
-  stroke(ACID.r, ACID.g, ACID.b, 110 * visibility);
-  strokeWeight(1.4);
-  const fiberIndex = selectedFiber;
-  const stride = CONFIG.pointsPerFiber + 1;
-  const offset = fiberIndex * stride * 3;
-  for (let pi = 0; pi < CONFIG.pointsPerFiber; pi += 28) {
-    const source = offset + pi * 3;
-    line(
-      0,
-      0,
-      0,
-      fiberPositions[source],
-      fiberPositions[source + 1],
-      fiberPositions[source + 2],
-    );
-  }
-}
-
-// ============================================================
-// 11. PARTICLE AND TRAIL RENDERING
-// ============================================================
-function renderTravellingParticles() {
-  const singleMix = Math.max(
-    modeMixes[MODES.SINGLE_FIBER],
-    modeMixes[MODES.HOPF_MAP],
-  );
-  const pairMix = modeMixes[MODES.LINKED_PAIR];
-  const visibility = Math.max(singleMix, pairMix);
-  if (visibility <= 0.01) return;
-
-  const count = pairMix > singleMix ? CONFIG.travellingParticleCount : 8;
+function renderVectorGlow(maxMag) {
   blendMode(ADD);
-  for (let i = 0; i < count; i++) {
-    const usePair = pairMix > singleMix;
-    const fiberIndex = usePair ? CONFIG.linkedPair[i % 2] : selectedFiber;
-    const colorValue = usePair && i % 2 ? MAGENTA : CYAN;
-    const base = TAU * (i / count);
-    const sampleIndex =
-      Math.floor(fract((base + loopState.phase) / TAU) * CONFIG.pointsPerFiber);
-    const curvatureOffset =
-      fiberIndex * (CONFIG.pointsPerFiber + 1) + sampleIndex;
-    const curvature = clamp(fiberCurvature[curvatureOffset] * 15, 0, 1);
-    const t =
-      base +
-      loopState.phase +
-      0.035 * curvature * Math.sin(loopState.phase + base);
-    renderParticleTrail(fiberIndex, t, colorValue, visibility);
-    renderParticle(fiberIndex, t, colorValue, visibility, curvature);
+  strokeWeight(CONFIG.glowWeight);
+  for (let i = 0; i < CONFIG.pointCount; i++) {
+    const o = i * 3;
+    const px = spherePositions[o],
+      py = spherePositions[o + 1],
+      pz = spherePositions[o + 2];
+    const vx = tangentBuffer[o],
+      vy = tangentBuffer[o + 1],
+      vz = tangentBuffer[o + 2];
+    const mag = magnitudeBuffer[i];
+    const magFrac = maxMag > 0 ? mag / maxMag : 0;
+    const displayLen =
+      CONFIG.vectorLengthScale *
+      (CONFIG.vectorLengthMin + (1 - CONFIG.vectorLengthMin) * magFrac);
+    const vinv = mag > 1e-6 ? displayLen / mag : 0;
+    const sx = px * CONFIG.sphereScale,
+      sy = py * CONFIG.sphereScale,
+      sz = pz * CONFIG.sphereScale;
+    const ux = vx * vinv,
+      uy = vy * vinv,
+      uz = vz * vinv;
+    const depth = depthBrightness(px, py, pz);
+    const alpha =
+      CONFIG.glowAlpha *
+      depth *
+      depth *
+      (0.35 + 0.65 * magFrac) *
+      fieldStageVisibility();
+
+    stroke(INK.r, INK.g, INK.b, alpha);
+    line(
+      sx - ux * 0.18,
+      sy - uy * 0.18,
+      sz - uz * 0.18,
+      sx + ux * 0.82,
+      sy + uy * 0.82,
+      sz + uz * 0.82,
+    );
   }
   blendMode(BLEND);
 }
 
-function renderParticleTrail(fiberIndex, headT, colorValue, visibility) {
-  const fiber = fibers[fiberIndex];
-  for (let j = CONFIG.trailLength; j > 0; j--) {
-    const life = 1 - j / CONFIG.trailLength;
-    const ta = headT - j * 0.018;
-    const tb = headT - (j - 1) * 0.018;
-    calculateS3Point(fiber, ta, s3Point);
-    if (!stereographicProject(s3Point, loopState.lambda, projectedPoint)) continue;
-    const ax = projectedPoint.x,
-      ay = projectedPoint.y,
-      az = projectedPoint.z;
-    calculateS3Point(fiber, tb, s3Point);
-    if (!stereographicProject(s3Point, loopState.lambda, projectedPoint)) continue;
-    stroke(
-      colorValue.r,
-      colorValue.g,
-      colorValue.b,
-      (8 + life * 105) * visibility,
+function renderVectorField(maxMag) {
+  const hero = heroMix();
+  strokeWeight(CONFIG.baseWeight);
+  blendMode(BLEND);
+  for (let i = 0; i < CONFIG.pointCount; i++) {
+    const o = i * 3;
+    const px = spherePositions[o],
+      py = spherePositions[o + 1],
+      pz = spherePositions[o + 2];
+    const vx = tangentBuffer[o],
+      vy = tangentBuffer[o + 1],
+      vz = tangentBuffer[o + 2];
+    const mag = magnitudeBuffer[i];
+    const magFrac = maxMag > 0 ? mag / maxMag : 0;
+    const displayLen =
+      CONFIG.vectorLengthScale *
+      (CONFIG.vectorLengthMin + (1 - CONFIG.vectorLengthMin) * magFrac);
+    const vinv = mag > 1e-6 ? displayLen / mag : 0;
+
+    const sx = px * CONFIG.sphereScale,
+      sy = py * CONFIG.sphereScale,
+      sz = pz * CONFIG.sphereScale;
+    const ux = vx * vinv,
+      uy = vy * vinv,
+      uz = vz * vinv;
+    const ex = sx + ux * 0.82,
+      ey = sy + uy * 0.82,
+      ez = sz + uz * 0.82;
+    const bx = sx - ux * 0.18,
+      by = sy - uy * 0.18,
+      bz = sz - uz * 0.18;
+
+    const depth = depthBrightness(px, py, pz);
+    const alpha =
+      CONFIG.baseAlpha *
+      depth *
+      (0.55 + 0.45 * magFrac) *
+      (0.88 + 0.12 * hero) *
+      fieldStageVisibility();
+    const zeroMix = clamp(
+      (CONFIG.zeroThresholdFrac - magFrac) / CONFIG.zeroThresholdFrac,
+      0,
+      1,
     );
-    strokeWeight(0.8 + life * 2.2);
-    line(ax, ay, az, projectedPoint.x, projectedPoint.y, projectedPoint.z);
+
+    if (zeroMix > 0) {
+      const dot0 =
+        px * singularities[0].x +
+        py * singularities[0].y +
+        pz * singularities[0].z;
+      const dot1 =
+        px * singularities[1].x +
+        py * singularities[1].y +
+        pz * singularities[1].z;
+      const c = dot0 > dot1 ? CYAN : MAGENTA;
+      stroke(
+        INK.r + (c.r - INK.r) * zeroMix,
+        INK.g + (c.g - INK.g) * zeroMix,
+        INK.b + (c.b - INK.b) * zeroMix,
+        alpha + 58 * zeroMix * depth * fieldStageVisibility(),
+      );
+      strokeWeight(CONFIG.baseWeight + 1.15 * zeroMix);
+    } else {
+      stroke(INK.r, INK.g, INK.b, alpha);
+      strokeWeight(CONFIG.baseWeight);
+    }
+    line(bx, by, bz, ex, ey, ez);
   }
 }
 
-function renderParticle(fiberIndex, t, colorValue, visibility, curvature) {
-  calculateS3Point(fibers[fiberIndex], t, s3Point);
-  if (!stereographicProject(s3Point, loopState.lambda, projectedPoint)) return;
-  const size = CONFIG.particleSize * (0.9 + curvature * 0.3);
-  push();
-  translate(projectedPoint.x, projectedPoint.y, projectedPoint.z);
+const _flowC = [0, 0, 0];
+const _probeE1 = [0, 0, 0];
+const _probeE2 = [0, 0, 0];
+const _defectE1 = [0, 0, 0];
+const _defectE2 = [0, 0, 0];
+
+function drawProbeRing(bx, by, bz, radius, alpha) {
+  noFill();
+  stroke(INK.r, INK.g, INK.b, alpha);
+  strokeWeight(1.5);
+  beginShape();
+  for (let i = 0; i <= 32; i++) {
+    const angle = (i / 32) * TAU;
+    const u = Math.cos(angle) * radius;
+    const v = Math.sin(angle) * radius;
+    vertex(
+      bx + _probeE1[0] * u + _probeE2[0] * v,
+      by + _probeE1[1] * u + _probeE2[1] * v,
+      bz + _probeE1[2] * u + _probeE2[2] * v,
+    );
+  }
+  endShape();
+}
+
+function renderFlowAccents(maxMag) {
+  fieldConstant(loopState.phase, _flowC);
+  const stageVisibility = [0.52, 0.52, 0.9, 1][probeState.stage];
+  blendMode(ADD);
+  for (let i = 0; i < CONFIG.pointCount; i += CONFIG.flowStride) {
+    const o = i * 3;
+    const px = spherePositions[o],
+      py = spherePositions[o + 1],
+      pz = spherePositions[o + 2];
+    const vx = tangentBuffer[o],
+      vy = tangentBuffer[o + 1],
+      vz = tangentBuffer[o + 2];
+    const mag = magnitudeBuffer[i];
+    const magFrac = maxMag > 0 ? mag / maxMag : 0;
+    if (magFrac < CONFIG.zeroThresholdFrac * 0.8) continue;
+
+    const displayLen =
+      CONFIG.vectorLengthScale *
+      (CONFIG.vectorLengthMin + (1 - CONFIG.vectorLengthMin) * magFrac);
+    const vinv = mag > 1e-6 ? displayLen / mag : 0;
+    const ux = vx * vinv,
+      uy = vy * vinv,
+      uz = vz * vinv;
+    const sx = px * CONFIG.sphereScale - ux * 0.18,
+      sy = py * CONFIG.sphereScale - uy * 0.18,
+      sz = pz * CONFIG.sphereScale - uz * 0.18;
+    const flowT = (loopState.loopT * 2 + i * 0.037) % 1;
+    const envelope = Math.pow(Math.sin(flowT * Math.PI), 2);
+    const depth = depthBrightness(px, py, pz);
+    const sourceDot = px * _flowC[0] + py * _flowC[1] + pz * _flowC[2];
+    const c = sourceDot >= 0 ? CYAN : MAGENTA;
+
+    stroke(c.r, c.g, c.b, 96 * depth * envelope * stageVisibility);
+    strokeWeight(CONFIG.flowPointSize * (0.65 + 0.35 * envelope));
+    point(sx + ux * flowT, sy + uy * flowT, sz + uz * flowT);
+  }
+  blendMode(BLEND);
+}
+
+function renderProbe() {
+  const p = probeState;
+  if (p.stage === 3) return;
+  const gl = drawingContext;
+  gl.disable(gl.DEPTH_TEST);
+  const scale = CONFIG.probeVectorScale;
+  const bx = p.x * CONFIG.sphereScale,
+    by = p.y * CONFIG.sphereScale,
+    bz = p.z * CONFIG.sphereScale;
+  const sourceX = bx + p.sourceX * scale,
+    sourceY = by + p.sourceY * scale,
+    sourceZ = bz + p.sourceZ * scale;
+  const tangentX = bx + p.tangentX * scale,
+    tangentY = by + p.tangentY * scale,
+    tangentZ = bz + p.tangentZ * scale;
+  const sourceFocus = [1, 0.28, 0.06][p.stage];
+  const normalFocus = [0, 1, 0.06][p.stage];
+  const tangentFocus = [0, 0.12, 1][p.stage];
+  const planeFocus = [0, 1, 0.38][p.stage];
+
+  localBasis(p.x, p.y, p.z, _probeE1, _probeE2);
+  const planeRadius = 74;
+  blendMode(BLEND);
+  fill(CYAN.r, CYAN.g, CYAN.b, 18 * planeFocus);
+  stroke(CYAN.r, CYAN.g, CYAN.b, 74 * planeFocus);
+  strokeWeight(1.1);
+  beginShape();
+  for (let i = 0; i < 32; i++) {
+    const angle = (i / 32) * TAU;
+    const u = Math.cos(angle) * planeRadius;
+    const v = Math.sin(angle) * planeRadius;
+    vertex(
+      bx + _probeE1[0] * u + _probeE2[0] * v,
+      by + _probeE1[1] * u + _probeE2[1] * v,
+      bz + _probeE1[2] * u + _probeE2[2] * v,
+    );
+  }
+  endShape(CLOSE);
+
+  const markerPulse = 0.5 + 0.5 * Math.sin(loopState.phase * 2);
+  blendMode(ADD);
+  drawProbeRing(bx, by, bz, 17, 190);
+  drawProbeRing(bx, by, bz, 27 + markerPulse * 12, 82 * (1 - markerPulse * 0.35));
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * TAU;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    line(
+      bx + (_probeE1[0] * c + _probeE2[0] * s) * 21,
+      by + (_probeE1[1] * c + _probeE2[1] * s) * 21,
+      bz + (_probeE1[2] * c + _probeE2[2] * s) * 21,
+      bx + (_probeE1[0] * c + _probeE2[0] * s) * 29,
+      by + (_probeE1[1] * c + _probeE2[1] * s) * 29,
+      bz + (_probeE1[2] * c + _probeE2[2] * s) * 29,
+    );
+  }
+
+  strokeWeight(13);
+  stroke(MAGENTA.r, MAGENTA.g, MAGENTA.b, 48 * sourceFocus);
+  line(bx, by, bz, sourceX, sourceY, sourceZ);
+  stroke(ACID.r, ACID.g, ACID.b, 48 * normalFocus);
+  line(tangentX, tangentY, tangentZ, sourceX, sourceY, sourceZ);
+  stroke(CYAN.r, CYAN.g, CYAN.b, 52 * tangentFocus);
+  line(bx, by, bz, tangentX, tangentY, tangentZ);
+
+  stroke(ACID.r, ACID.g, ACID.b, 82 * normalFocus);
+  strokeWeight(2.2);
+  line(
+    bx - p.x * 58,
+    by - p.y * 58,
+    bz - p.z * 58,
+    bx + p.x * 82,
+    by + p.y * 82,
+    bz + p.z * 82,
+  );
+  strokeWeight(6.5);
+  stroke(MAGENTA.r, MAGENTA.g, MAGENTA.b, 255 * sourceFocus);
+  line(bx, by, bz, sourceX, sourceY, sourceZ);
+  stroke(ACID.r, ACID.g, ACID.b, 255 * normalFocus);
+  line(tangentX, tangentY, tangentZ, sourceX, sourceY, sourceZ);
+  stroke(CYAN.r, CYAN.g, CYAN.b, 255 * tangentFocus);
+  line(bx, by, bz, tangentX, tangentY, tangentZ);
+
   noStroke();
-  noLights();
-  fill(colorValue.r, colorValue.g, colorValue.b, 32 * visibility);
-  sphere(size * 2.5, 6, 4);
-  fill(colorValue.r, colorValue.g, colorValue.b, 242 * visibility);
-  sphere(size, 7, 5);
+  fill(INK.r, INK.g, INK.b, 190 * Math.max(sourceFocus, normalFocus, tangentFocus));
+  push();
+  translate(bx, by, bz);
+  sphere(8, 8, 6);
   pop();
+  fill(MAGENTA.r, MAGENTA.g, MAGENTA.b, 240 * sourceFocus);
+  push();
+  translate(sourceX, sourceY, sourceZ);
+  sphere(10, 8, 6);
+  pop();
+  fill(CYAN.r, CYAN.g, CYAN.b, 250 * tangentFocus);
+  push();
+  translate(tangentX, tangentY, tangentZ);
+  sphere(10, 8, 6);
+  pop();
+  blendMode(BLEND);
+  gl.enable(gl.DEPTH_TEST);
+}
+
+function renderSingularities() {
+  const colors = [CYAN, MAGENTA];
+  const hero = heroMix();
+  blendMode(ADD);
+  noStroke();
+
+  for (let k = 0; k < singularities.length; k++) {
+    const s = singularities[k];
+    const c = colors[k];
+    const depth = depthBrightness(s.x, s.y, s.z);
+    const sx = s.x * CONFIG.sphereScale,
+      sy = s.y * CONFIG.sphereScale,
+      sz = s.z * CONFIG.sphereScale;
+
+    push();
+    translate(sx, sy, sz);
+    const pulse = 0.5 + 0.5 * Math.sin(loopState.phase * 2 + k * Math.PI);
+    for (let r = 0; r < CONFIG.singularityRingCount; r++) {
+      const ringT =
+        (loopState.loopT + r / CONFIG.singularityRingCount + k * 0.5) % 1;
+      const ringRadius = CONFIG.singularityRadius * (1.8 + ringT * 2.2);
+      const defectFocus = probeState.stage === 3 ? 1.6 : 0.22;
+      const ringAlpha =
+        80 *
+        Math.pow(1 - ringT, 1.7) *
+        depth *
+        (0.65 + 0.35 * hero) *
+        defectFocus;
+      push();
+      noFill();
+      stroke(c.r, c.g, c.b, ringAlpha);
+      strokeWeight(1.4);
+      rotateY(loopState.phase * 0.3 + (r * TAU) / CONFIG.singularityRingCount);
+      rotateX(HALF_PI + 0.35 * Math.sin(loopState.phase + r * 2.1));
+      circle(0, 0, ringRadius * 2);
+      pop();
+    }
+    noStroke();
+    const defectBodyFocus = probeState.stage === 3 ? 1.45 : 0.24;
+    fill(c.r, c.g, c.b, 34 * depth * defectBodyFocus);
+    sphere(CONFIG.singularityRadius * 1.6, 10, 8);
+    fill(c.r, c.g, c.b, (210 + 45 * pulse) * depth * defectBodyFocus);
+    sphere(CONFIG.singularityRadius * 0.7, 10, 8);
+    pop();
+  }
+  blendMode(BLEND);
+}
+
+function renderDefectHalos() {
+  if (probeState.stage !== 3) return;
+
+  const colors = [CYAN, MAGENTA];
+  const stageT = clamp((loopState.loopT - 0.75) / 0.25, 0, 1);
+  const reveal = stageT * stageT * (3 - 2 * stageT);
+  const surfaceRadius = CONFIG.sphereScale + 4;
+
+  blendMode(ADD);
+  noFill();
+
+  for (let k = 0; k < singularities.length; k++) {
+    const s = singularities[k];
+    const c = colors[k];
+    const depth = depthBrightness(s.x, s.y, s.z);
+    localBasis(s.x, s.y, s.z, _defectE1, _defectE2);
+
+    for (let ring = 0; ring < 4; ring++) {
+      const wave = (stageT * 1.35 + ring * 0.19 + k * 0.5) % 1;
+      const angularRadius = 0.055 + ring * 0.038 + wave * 0.035;
+      const ringAlpha =
+        (118 - ring * 16) *
+        depth *
+        reveal *
+        Math.pow(1 - wave * 0.52, 1.5);
+
+      stroke(c.r, c.g, c.b, ringAlpha);
+      strokeWeight(2.4 - ring * 0.3);
+      beginShape();
+      for (let i = 0; i <= 48; i++) {
+        const angle = (i / 48) * TAU;
+        const ca = Math.cos(angularRadius);
+        const sa = Math.sin(angularRadius);
+        const tx =
+          _defectE1[0] * Math.cos(angle) + _defectE2[0] * Math.sin(angle);
+        const ty =
+          _defectE1[1] * Math.cos(angle) + _defectE2[1] * Math.sin(angle);
+        const tz =
+          _defectE1[2] * Math.cos(angle) + _defectE2[2] * Math.sin(angle);
+        vertex(
+          (s.x * ca + tx * sa) * surfaceRadius,
+          (s.y * ca + ty * sa) * surfaceRadius,
+          (s.z * ca + tz * sa) * surfaceRadius,
+        );
+      }
+      endShape();
+
+      const orbitAngle = loopState.phase * (k === 0 ? 1.4 : -1.4) + ring * 1.7;
+      const ca = Math.cos(angularRadius);
+      const sa = Math.sin(angularRadius);
+      const ox =
+        _defectE1[0] * Math.cos(orbitAngle) +
+        _defectE2[0] * Math.sin(orbitAngle);
+      const oy =
+        _defectE1[1] * Math.cos(orbitAngle) +
+        _defectE2[1] * Math.sin(orbitAngle);
+      const oz =
+        _defectE1[2] * Math.cos(orbitAngle) +
+        _defectE2[2] * Math.sin(orbitAngle);
+      stroke(c.r, c.g, c.b, 210 * depth * reveal);
+      strokeWeight(5.4 - ring * 0.55);
+      point(
+        (s.x * ca + ox * sa) * (surfaceRadius + 2),
+        (s.y * ca + oy * sa) * (surfaceRadius + 2),
+        (s.z * ca + oz * sa) * (surfaceRadius + 2),
+      );
+    }
+  }
+
+  blendMode(BLEND);
 }
 
 // ============================================================
-// 13. ATMOSPHERE AND COMPACT SIMULATOR INTERFACE
+// 9. ATMOSPHERE AND COMPACT INTERFACE
 // ============================================================
 function createInterfaceLayers() {
   hudPg = createGraphics(W, H);
@@ -637,39 +841,23 @@ function createInterfaceLayers() {
   context.fillRect(0, 0, W, H);
 }
 
-function renderCentralGlow() {
-  const hero = heroMix();
-  blendMode(ADD);
-  noStroke();
-  const breathe = 1 + 0.045 * Math.sin(loopState.phase);
-  push();
-  scale(breathe);
-  fill(CYAN.r, CYAN.g, CYAN.b, 10 + hero * 26);
-  sphere(96, 16, 10);
-  fill(MAGENTA.r, MAGENTA.g, MAGENTA.b, 7 + hero * 18);
-  sphere(58, 14, 9);
-  pop();
-  blendMode(BLEND);
-}
-
 const HUD_BOT_H = 480;
 const SAFE_TOP = 90;
-const SAFE_BOT = 60;
+const _hudV = [0, 0, 0];
 
-// Ties the MODE readout's color to whichever palette color the scene is
-// actually featuring in that mode, instead of a flat neutral label.
-function modeReadoutColor() {
-  switch (loopState.activeMode) {
-    case MODES.LINKED_PAIR:
-      return `rgba(${MAGENTA.r},${MAGENTA.g},${MAGENTA.b},.86)`;
-    case MODES.PROJECTION:
-      return `rgba(${ACID.r},${ACID.g},${ACID.b},.86)`;
-    case MODES.SINGLE_FIBER:
-    case MODES.HOPF_MAP:
-    case MODES.FULL_FIBRATION:
-    default:
-      return `rgba(${CYAN.r},${CYAN.g},${CYAN.b},.86)`;
+function singularityResidual() {
+  let maxResidual = 0;
+  for (const singularity of singularities) {
+    tangentFieldAt(
+      singularity.x,
+      singularity.y,
+      singularity.z,
+      loopState.phase,
+      _hudV,
+    );
+    maxResidual = Math.max(maxResidual, Math.hypot(_hudV[0], _hudV[1], _hudV[2]));
   }
+  return maxResidual;
 }
 
 function renderSimulatorInterface() {
@@ -682,19 +870,19 @@ function renderSimulatorInterface() {
   context.textAlign = "left";
   context.font = `26px ${mono}`;
   context.fillStyle = "rgba(255,255,255,.92)";
-  context.fillText("HOPF FIBRATION", 72, 72 + SAFE_TOP);
+  context.fillText("HAIRY BALL THEOREM", 72, 72 + SAFE_TOP);
   context.font = `18px ${mono}`;
   context.fillStyle = `rgba(${CYAN.r},${CYAN.g},${CYAN.b},.84)`;
-  context.fillText("S³ → S²", 72, 112 + SAFE_TOP);
+  context.fillText("S² tangent field", 72, 112 + SAFE_TOP);
 
   context.textAlign = "left";
   context.font = `16px ${mono}`;
   context.fillStyle = "rgba(255,255,255,.48)";
-  context.fillText(`FIBERS  ${CONFIG.fiberCount}`, 72, 150 + SAFE_TOP);
-  context.fillStyle = modeReadoutColor();
-  context.fillText(`MODE  ${MODE_NAMES[loopState.activeMode]}`, 72, 178 + SAFE_TOP);
-  context.fillStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},.72)`;
-  context.fillText(`λ  ${loopState.lambda.toFixed(3)}`, 72, 206 + SAFE_TOP);
+  context.fillText(
+    `VECTORS  ${CONFIG.pointCount}    DEFECTS  2    PROBE  LIVE`,
+    72,
+    150 + SAFE_TOP,
+  );
 
   const topRuleY = 232 + SAFE_TOP;
   const footY = H - HUD_BOT_H;
@@ -707,14 +895,100 @@ function renderSimulatorInterface() {
   context.lineTo(W - 72, footY);
   context.stroke();
 
+  const residual = singularityResidual();
+  const phaseDegrees = loopState.loopT * 360;
+  const baseY = footY + 38;
+  const sourceHudAlpha = [0.96, 0.24, 0.16, 0.12][probeState.stage];
+  const normalHudAlpha = [0.18, 0.96, 0.2, 0.12][probeState.stage];
+  const tangentHudAlpha = [0.16, 0.24, 0.96, 0.12][probeState.stage];
+  const defectHudAlpha = [0.16, 0.16, 0.22, 0.92][probeState.stage];
+
   context.textAlign = "center";
-  context.font = `17px ${mono}`;
-  context.fillStyle = "rgba(255,255,255,.5)";
+  context.font = `16px ${mono}`;
+  context.fillStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},.86)`;
   context.fillText(
-    "(X,Y,Z) = (x₁,x₂,x₃) / (1 − λx₄)",
+    `SIMULATOR    ${EXPLANATION_STAGES[probeState.stage]}`,
     W / 2,
-    footY - SAFE_BOT,
+    baseY,
   );
+
+  context.font = `23px ${mono}`;
+  context.fillStyle = "rgba(255,255,255,.9)";
+  context.fillText(EXPLANATION_FORMULAS[probeState.stage], W / 2, baseY + 38);
+  context.font = `17px ${mono}`;
+  context.fillStyle = "rgba(255,255,255,.42)";
+  context.fillText(EXPLANATION_HELP[probeState.stage], W / 2, baseY + 78);
+
+  context.font = `16px ${mono}`;
+  context.textAlign = "left";
+  context.fillStyle = `rgba(${MAGENTA.r},${MAGENTA.g},${MAGENTA.b},${sourceHudAlpha})`;
+  context.fillText(
+    `1 SOURCE  |v| = ${probeState.sourceMagnitude.toFixed(3)}`,
+    76,
+    baseY + 128,
+  );
+  context.textAlign = "center";
+  context.fillStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},${normalHudAlpha})`;
+  context.fillText(
+    `2 REMOVE  |n(v·n)| = ${probeState.normalMagnitude.toFixed(3)}`,
+    W / 2,
+    baseY + 128,
+  );
+  context.textAlign = "right";
+  context.fillStyle = `rgba(${CYAN.r},${CYAN.g},${CYAN.b},${tangentHudAlpha})`;
+  context.fillText(
+    `3 RESULT  |vᴛ| = ${probeState.tangentMagnitude.toFixed(3)}`,
+    W - 76,
+    baseY + 128,
+  );
+
+  context.textAlign = "left";
+  context.fillStyle = "rgba(255,255,255,.42)";
+  context.fillText(
+    `PHASE  ${phaseDegrees.toFixed(1).padStart(5, " ")}°`,
+    76,
+    baseY + 170,
+  );
+  context.textAlign = "right";
+  context.fillStyle = `rgba(255,255,255,${defectHudAlpha})`;
+  context.fillText(
+    `4 DEFECT  max |vᴛ(p*)| = ${residual.toExponential(1)}`,
+    W - 76,
+    baseY + 170,
+  );
+
+  const trackY = baseY + 222;
+  const trackWidth = W - 152;
+  const phaseX = 76 + trackWidth * loopState.loopT;
+  context.beginPath();
+  context.moveTo(76, trackY);
+  context.lineTo(W - 76, trackY);
+  context.strokeStyle = "rgba(255,255,255,.12)";
+  context.lineWidth = 1;
+  context.stroke();
+  context.strokeStyle = "rgba(255,255,255,.16)";
+  for (let i = 1; i < 4; i++) {
+    const tickX = 76 + (trackWidth * i) / 4;
+    context.beginPath();
+    context.moveTo(tickX, trackY - 7);
+    context.lineTo(tickX, trackY + 7);
+    context.stroke();
+  }
+  context.beginPath();
+  context.moveTo(76, trackY);
+  context.lineTo(phaseX, trackY);
+  context.strokeStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},.72)`;
+  context.lineWidth = 2;
+  context.stroke();
+  context.beginPath();
+  context.arc(phaseX, trackY, 4.5, 0, TAU);
+  context.fillStyle = `rgba(${ACID.r},${ACID.g},${ACID.b},.92)`;
+  context.fill();
+
+  context.textAlign = "center";
+  context.font = `15px ${mono}`;
+  context.fillStyle = "rgba(255,255,255,.28)";
+  context.fillText("∄ continuous tangent field with |vᴛ(p)| > 0 for every p ∈ S²", W / 2, baseY + 252);
   context.restore();
 
   drawOverlayLayer(vignettePg);
@@ -735,15 +1009,11 @@ function drawOverlayLayer(layer) {
 }
 
 // ============================================================
-// 14. LOOP-SAFE CAMERA
+// 10. LOOP-SAFE CAMERA (counter-rotating relative to field phase —
+// keeps at least one singularity camera-facing across the whole loop)
 // ============================================================
 function applyLoopingCamera() {
-  const pairInspectionAngle =
-    CONFIG.cameraStartAngle + TAU * 0.41 + Math.sin(loopState.phase) * 0.18;
-  const angle =
-    (!autoMode && manualMode === MODES.LINKED_PAIR
-      ? pairInspectionAngle
-      : loopState.cameraAngle) + userYaw;
+  const angle = loopState.cameraAngle + userYaw;
   const radius = loopState.cameraRadius + userZoomOffset;
   const height = loopState.cameraHeight + userPitch * 420;
   const cx = Math.sin(angle) * radius;
@@ -752,16 +1022,10 @@ function applyLoopingCamera() {
 }
 
 // ============================================================
-// 15. AUTOMATIC REEL TIMELINE
+// 11. AUTOMATIC REEL TIMELINE
 // ============================================================
-function modeEnvelope(startIn, endIn, startOut, endOut, t) {
-  return smoothStep(startIn, endIn, t) * (1 - smoothStep(startOut, endOut, t));
-}
-
-// Peaks at t=0 and t=1 (loop wrap), floor at t=0.5 — integer k=1 cosine, so
-// the hero state is both the strongest frame AND identical at both loop
-// ends. This puts the best-looking state in the first half-second and lets
-// the final transition land back on itself.
+// Peaks at t=0 and t=1 (loop wrap) — integer k=1 cosine, so the hero state
+// is both the strongest frame and identical at both loop ends.
 function heroMix() {
   return 0.5 + 0.5 * Math.cos(loopState.phase);
 }
@@ -770,50 +1034,15 @@ function updateAutomaticTimeline(frameIndex) {
   loopState.loopT =
     (((frameIndex % LOOP_FRAMES) + LOOP_FRAMES) % LOOP_FRAMES) / LOOP_FRAMES;
   loopState.phase = loopState.loopT * TAU;
-  modeMixes.fill(0);
 
-  if (autoMode) {
-    modeMixes[MODES.SINGLE_FIBER] = modeEnvelope(0.08, 0.12, 0.25, 0.3, loopState.loopT);
-    modeMixes[MODES.LINKED_PAIR] = modeEnvelope(0.27, 0.32, 0.5, 0.56, loopState.loopT);
-    modeMixes[MODES.HOPF_MAP] = modeEnvelope(0.52, 0.57, 0.74, 0.8, loopState.loopT);
-    modeMixes[MODES.PROJECTION] = modeEnvelope(0.76, 0.82, 0.93, 0.98, loopState.loopT);
-    const maxFocus = Math.max(
-      modeMixes[MODES.SINGLE_FIBER],
-      modeMixes[MODES.LINKED_PAIR],
-      modeMixes[MODES.HOPF_MAP],
-      modeMixes[MODES.PROJECTION],
-    );
-    modeMixes[MODES.FULL_FIBRATION] = 1 - maxFocus;
-  } else {
-    modeMixes[manualMode] = 1;
-  }
-
-  let activeMode = MODES.FULL_FIBRATION;
-  for (let i = 1; i < modeMixes.length; i++) {
-    if (modeMixes[i] > modeMixes[activeMode]) activeMode = i;
-  }
-  loopState.activeMode = activeMode;
-
-  const projectionMix = modeMixes[MODES.PROJECTION];
-  loopState.lambda = autoMode
-    ? CONFIG.projectionBase +
-      CONFIG.projectionAmplitude *
-        Math.sin(loopState.phase) *
-        (0.25 + projectionMix * 0.75)
-    : manualLambda;
-  loopState.lambda = clamp(
-    loopState.lambda,
-    CONFIG.projectionMin,
-    CONFIG.projectionMax,
-  );
-
-  loopState.cameraAngle = CONFIG.cameraStartAngle + loopState.phase;
+  // Camera counter-rotates against the field phase (verified via numeric
+  // sweep — co-rotating leaves both singularities on the far side for a
+  // stretch of the loop; counter-rotation keeps a defect strongly visible).
+  loopState.cameraAngle = CONFIG.cameraStartAngle - loopState.phase;
   loopState.cameraRadius =
-    CONFIG.cameraRadius +
-    Math.sin(loopState.phase * 2) * CONFIG.cameraRadiusVariation;
+    CONFIG.cameraRadius + Math.sin(loopState.phase * 2) * CONFIG.cameraRadiusVariation;
   loopState.cameraHeight =
-    CONFIG.cameraHeight +
-    Math.sin(loopState.phase) * CONFIG.cameraHeightVariation;
+    CONFIG.cameraHeight + Math.sin(loopState.phase) * CONFIG.cameraHeightVariation;
   const viewInv = 1 / Math.max(1, Math.hypot(loopState.cameraRadius, loopState.cameraHeight));
   loopState.viewX = Math.sin(loopState.cameraAngle) * loopState.cameraRadius * viewInv;
   loopState.viewY = loopState.cameraHeight * viewInv;
@@ -821,7 +1050,7 @@ function updateAutomaticTimeline(frameIndex) {
 }
 
 // ============================================================
-// 16. SETUP AND MAIN RENDER LOOP
+// 12. SETUP AND MAIN RENDER LOOP
 // ============================================================
 function setup() {
   setAttributes({ alpha: false, antialias: true, preserveDrawingBuffer: true });
@@ -834,36 +1063,34 @@ function setup() {
   document.getElementById("canvas-wrap").appendChild(canvasEl);
   document.getElementById("maxDuration").textContent = MAX_DURATION;
   document.getElementById("maxFrames").textContent = MAX_FRAMES;
-  initializeSimulator();
+  generateSpherePoints();
   createInterfaceLayers();
   bindControls();
 }
 
 function renderScene() {
   applyLoopingCamera();
-  updateFiberBuffers();
-  ambientLight(18, 18, 24);
-  pointLight(CYAN.r, CYAN.g, CYAN.b, -300, -380, 500);
-  pointLight(MAGENTA.r, MAGENTA.g, MAGENTA.b, 360, 180, -320);
+  const maxMag = updateFieldBuffers(loopState.phase);
+  trackSingularities(loopState.phase);
+  updateProbeState();
 
   push();
   rotateX(-0.16);
-  renderCentralGlow();
-  renderFullFibration();
-  prepareSelectedLayer();
-  renderSingleFiber();
-  renderLinkedPair();
-  renderHopfMapMode();
-  renderProjectionMode();
-  renderTravellingParticles();
-  drawingContext.depthFunc(drawingContext.LESS);
+  renderVectorGlow(maxMag);
+  renderVectorField(maxMag);
+  renderFlowAccents(maxMag);
+  renderProbe();
+  renderDefectHalos();
+  renderSingularities();
   pop();
 
   renderSimulatorInterface();
 }
 
 function draw() {
-  const sourceFrame = isRecording ? recFrameCount : frameCount - 1;
+  const sourceFrame = isRecording
+    ? recordingStartFrame + recFrameCount
+    : frameCount - 1;
   if (!paused || isRecording) frozenFrame = sourceFrame;
   updateAutomaticTimeline(frozenFrame);
   background(BG_R, BG_G, BG_B);
@@ -879,21 +1106,14 @@ function draw() {
 }
 
 // ============================================================
-// 17. INTERACTION CONTROLS
+// 13. INTERACTION CONTROLS
 // ============================================================
 function bindControls() {
   document.getElementById("startBtn").addEventListener("click", startRecording);
   document.getElementById("stopBtn").addEventListener("click", stopRecording);
   document
     .getElementById("pngBtn")
-    .addEventListener("click", () =>
-      saveCanvas("hopf_fibration_" + ts(), "png"),
-    );
-}
-
-function setManualMode(mode) {
-  manualMode = mode;
-  autoMode = false;
+    .addEventListener("click", () => saveCanvas("hairy_ball_" + ts(), "png"));
 }
 
 function resetCamera() {
@@ -902,12 +1122,9 @@ function resetCamera() {
   userZoomOffset = 0;
 }
 
-function resetSimulation(useAutomatic = true) {
+function resetSimulation() {
   resetCamera();
-  selectedFiber = CONFIG.selectedFiber;
-  manualLambda = CONFIG.projectionBase;
-  autoMode = useAutomatic;
-  manualMode = MODES.FULL_FIBRATION;
+  singularitiesSeeded = false;
 }
 
 function mousePressed() {
@@ -936,32 +1153,12 @@ function mouseWheel(event) {
 }
 
 function keyPressed() {
-  if (key >= "1" && key <= "5") {
-    setManualMode(Number(key) - 1);
-    return false;
-  }
-  if (keyCode === LEFT_ARROW || keyCode === RIGHT_ARROW) {
-    const direction = keyCode === RIGHT_ARROW ? 1 : -1;
-    selectedFiber =
-      (selectedFiber + direction + CONFIG.fiberCount) % CONFIG.fiberCount;
-    return false;
-  }
-  if (keyCode === UP_ARROW || keyCode === DOWN_ARROW) {
-    autoMode = false;
-    manualMode = MODES.PROJECTION;
-    manualLambda = clamp(
-      manualLambda + (keyCode === UP_ARROW ? 0.01 : -0.01),
-      CONFIG.projectionMin,
-      CONFIG.projectionMax,
-    );
-    return false;
-  }
   if (key === " ") {
     paused = !paused;
     return false;
   }
   if (key === "r" || key === "R") {
-    resetSimulation(true);
+    resetSimulation();
     return false;
   }
   if (key === "h" || key === "H") {
@@ -969,7 +1166,7 @@ function keyPressed() {
     return false;
   }
   if (key === "p" || key === "P") {
-    saveCanvas("hopf_fibration_" + ts(), "png");
+    saveCanvas("hairy_ball_" + ts(), "png");
     return false;
   }
   if (key === "c" || key === "C" || key === "e" || key === "E") {
@@ -980,7 +1177,7 @@ function keyPressed() {
 }
 
 // ============================================================
-// 18. EXISTING WEBCodecs + MP4-MUXER CAPTURE/EXPORT WORKFLOW
+// 14. EXISTING WEBCodecs + MP4-MUXER CAPTURE/EXPORT WORKFLOW
 // ============================================================
 function startRecording() {
   if (typeof VideoEncoder === "undefined") {
@@ -991,7 +1188,9 @@ function startRecording() {
     alert("mp4-muxer not loaded.");
     return;
   }
-  resetSimulation(true);
+  // Capture from the exact phase and camera state currently on screen.
+  // Adding recFrameCount still records one complete, seamless 600-frame loop.
+  recordingStartFrame = frozenFrame;
   muxer = new Mp4Muxer.Muxer({
     target: new Mp4Muxer.ArrayBufferTarget(),
     video: { codec: "avc", width: W, height: H },
@@ -1014,7 +1213,6 @@ function startRecording() {
     framerate: FPS,
   });
   recFrameCount = 0;
-  frozenFrame = 0;
   isRecording = true;
   paused = false;
   document.body.classList.add("recording");
@@ -1033,7 +1231,7 @@ async function stopRecording() {
     url = URL.createObjectURL(blob),
     anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "hopf_fibration_" + ts() + ".mp4";
+  anchor.download = "hairy_ball_" + ts() + ".mp4";
   anchor.click();
   encoder.close();
   encoder = null;
@@ -1057,9 +1255,7 @@ function captureFrame() {
 }
 
 function updateRecordingUi() {
-  document.getElementById("duration").textContent = (
-    recFrameCount / FPS
-  ).toFixed(1);
+  document.getElementById("duration").textContent = (recFrameCount / FPS).toFixed(1);
   document.getElementById("frameCount").textContent = recFrameCount;
   document.getElementById("progressFill").style.width =
     ((recFrameCount / MAX_FRAMES) * 100).toFixed(1) + "%";
@@ -1072,19 +1268,10 @@ function setStatus(textValue, colorValue) {
 }
 
 // ============================================================
-// 19. UTILITIES
+// 15. UTILITIES
 // ============================================================
-function smoothStep(edge0, edge1, value) {
-  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
-}
-
-function fract(value) {
-  return value - Math.floor(value);
 }
 
 function ts() {

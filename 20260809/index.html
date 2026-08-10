@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hopf Fibration · 3D Mathematical Simulation</title>
+  <title>Hairy Ball Theorem · 3D Mathematical Simulation</title>
   <link rel="icon" href="data:," />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background:#06060a; color:#fff; font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; display:flex; flex-direction:column; align-items:center; padding:32px 16px 48px; min-height:100vh; }
     #canvas-wrap canvas { width:min(540px,100vw)!important; height:auto!important; display:block; }
     #controls { position:fixed; right:18px; bottom:18px; z-index:20; width:min(390px,calc(100vw - 36px)); display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid rgba(255,255,255,.13); border-radius:10px; background:rgba(3,3,5,.88); box-shadow:0 18px 60px rgba(0,0,0,.55); backdrop-filter:blur(14px); }
-    #controls::before { content:'HOPF FIBRATION / CAPTURE'; font-size:10px; letter-spacing:.18em; color:rgba(255,255,255,.42); }
+    #controls::before { content:'HAIRY BALL THEOREM / CAPTURE'; font-size:10px; letter-spacing:.18em; color:rgba(255,255,255,.42); }
     .ctrl-row { display:flex; align-items:center; gap:12px; }
     button { flex:1; padding:11px 0; border:1px solid rgba(255,255,255,.18); border-radius:6px; background:rgba(255,255,255,.06); color:#fff; font:13px inherit; letter-spacing:.08em; cursor:pointer; transition:background .15s; }
     button:hover:not(:disabled){background:rgba(255,255,255,.13)} button:disabled{opacity:.35;cursor:default}
@@ -28,7 +28,7 @@
     <div class="ctrl-row"><button id="startBtn">⏺ Record MP4</button><button id="stopBtn" disabled>⏹ Stop</button><button id="pngBtn">⬇ PNG</button></div>
     <div id="export-progress"><div id="progressFill"></div></div>
     <div id="status-row"><span>Status: <span id="status">Ready</span></span><span><span id="duration">0.0</span>s / <span id="maxDuration"></span>s · <span id="frameCount">0</span> / <span id="maxFrames"></span></span></div>
-    <div id="hint">1–5 modes · ← → fiber · ↑ ↓ projection · drag orbit · wheel zoom · Space pause · R auto · H interface · P PNG · C/E MP4</div>
+    <div id="hint">drag orbit · wheel zoom · Space pause · R reset · H interface · P PNG · C/E MP4</div>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@latest/build/mp4-muxer.js"></script>
