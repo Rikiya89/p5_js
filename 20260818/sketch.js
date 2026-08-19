@@ -15,10 +15,10 @@ const INK_R = 255, INK_G = 255, INK_B = 255;
 const CONFIG = {
   surfaceUSegments: 72,
   surfaceVSegments: 40,
-  sphereRadius: 405,
+  sphereRadius: 300,
   sphereDeformation: 0.10,
-  torusMajorRadius: 315,
-  torusMinorRadius: 142,
+  torusMajorRadius: 250,
+  torusMinorRadius: 113,
   curvatureDisplacement: 18,
   curvatureLineLength: 54,
   curvatureGlow: 6.2,
@@ -517,7 +517,7 @@ function drawScreenFinish() {
   g.text("GAUSS–BONNET     ·     LOCAL → GLOBAL", W * 0.5, 309);
 
   g.textAlign(LEFT, TOP);
-  g.fill(INK_R, INK_G, INK_B, 76);
+  g.fill(INK_R, INK_G, INK_B, 132);
   g.textSize(19);
   g.text("SURFACE     " + info.label, 70, 390);
   g.text("LOCAL K     " + info.sign, 70, 425);
