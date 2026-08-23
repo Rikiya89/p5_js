@@ -14,8 +14,8 @@ const CONFIG = {
   uSegments: 72,
   vSegments: 38,
   sphereRadius: 300,
-  corrugationLobes: 3,      // N: integer lobe count, must stay integer (C1-safe, loop-safe)
-  corrugationAmount: 0.35,  // fold amount / wrinkle depth
+  corrugationLobes: 5,      // N: integer lobe count, must stay integer (C1-safe, loop-safe)
+  corrugationAmount: 0.9,   // fold amount / wrinkle depth
   surfaceLineWeight: 1.15,
   glowLineWeight: 5.2,
   markerStrideU: 6,
@@ -78,9 +78,18 @@ function updateAutomaticTimeline(frameIndex) {
 // by an inversion angle 0->pi around the profile plane. At evertT=1 the whole
 // surface orientation has flipped — outward has become inward — while the
 // Jacobian never vanishes and the radius never crosses zero, so nothing tears.
+// Broad plateau envelope (fade in, hold, fade out) instead of a narrow sine
+// pulse, so the corrugation is visible across most of the eversion, not just
+// a blip at evertT=0.5. Still 0 at evertT=0/1 for loop-safety and pole calm.
+function corrugationEnvelope(evertT) {
+  const fadeIn = smooth01((evertT - 0.12) / (0.32 - 0.12));
+  const fadeOut = 1 - smooth01((evertT - 0.7) / (0.9 - 0.7));
+  return fadeIn * fadeOut;
+}
+
 function evertPosition(u, v, evertT) {
   const N = CONFIG.corrugationLobes;
-  const amp = Math.sin(Math.PI * evertT);
+  const amp = corrugationEnvelope(evertT);
   const wavePhase = evertT * TAU;
   const inv = evertT * Math.PI;
 
