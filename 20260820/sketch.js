@@ -23,6 +23,7 @@ const CONFIG = {
   markerLength: 30,
   cameraRadius: 1510,
   cameraHeight: -95,
+  fogDepthRange: 980,
   showInterface: true,
 };
 
@@ -33,7 +34,7 @@ const LABELS = [
   { phase: "INSIDE OUT", note: "ORIENTATION INVERTED" },
 ];
 
-let canvasEl, hudPg, vignettePg;
+let canvasEl, hudPg, vignettePg, grainPg;
 let muxer = null, encoder = null, isRecording = false;
 let recFrameCount = 0, recordingStartFrame = 0;
 let paused = false, frozenFrame = 0;
@@ -45,6 +46,7 @@ const loopState = {
   loopT: 0, phase: 0, evertT: 0, cameraAngle: -0.46,
   cameraRadius: CONFIG.cameraRadius, cameraHeight: CONFIG.cameraHeight,
 };
+const cameraEye = { x: 0, y: 0, z: 0 };
 
 const pointCount = CONFIG.uSegments * CONFIG.vSegments;
 const surface = {
@@ -57,22 +59,23 @@ function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(maxi
 function smooth01(value) { const t = clamp(value, 0, 1); return t * t * (3 - 2 * t); }
 function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
-// Palindromic time map: loopT 0->1 becomes evertT 0->1->0, so the sphere
-// everts and un-everts within one loop and the animation closes seamlessly.
-function palindromeT(loopT) { return 1 - Math.abs(1 - 2 * loopT); }
+// C1-continuous palindromic time map: loopT 0->1 becomes evertT 0->1->0.
+// The zero velocity at both endpoints removes the visible hitch at the loop seam.
+function palindromeT(loopT) { return 0.5 - 0.5 * Math.cos(loopT * TAU); }
 
 function updateAutomaticTimeline(frameIndex) {
   const t = (((frameIndex % LOOP_FRAMES) + LOOP_FRAMES) % LOOP_FRAMES) / LOOP_FRAMES;
   loopState.loopT = t;
   loopState.phase = t * TAU;
   loopState.evertT = palindromeT(t);
-  // camera orbit is monotone across the whole loop (integer harmonic of phase)
-  // so the palindromic eversion never reads as a simple rewind.
-  loopState.cameraAngle = -0.46 + loopState.phase * 0.5;
+  // A closed, asymmetric camera path prevents the return pass reading as a
+  // simple rewind while still landing exactly on its opening pose.
+  loopState.cameraAngle = -0.46 + 0.28 * Math.sin(loopState.phase) + 0.06 * Math.sin(loopState.phase * 2);
   loopState.cameraRadius = CONFIG.cameraRadius + 36 * Math.sin(loopState.phase * 2);
   loopState.cameraHeight = CONFIG.cameraHeight + 52 * Math.sin(loopState.phase);
 }
 
+<<<<<<< Updated upstream
 // Rotate-the-profile-through-itself eversion: a radial/axial (r,y) profile
 // curve is corrugated (amplitude 0 at evertT=0/1, peak mid-morph) then rotated
 // by an inversion angle 0->pi around the profile plane. At evertT=1 the whole
@@ -87,6 +90,12 @@ function corrugationEnvelope(evertT) {
   return fadeIn * fadeOut;
 }
 
+=======
+// Stylized rotate-the-profile-through-itself eversion study: a radial/axial
+// profile is corrugated at the midpoint and rotated toward an inside-out pose.
+// It visualizes the topology without claiming a numerically proven regular
+// homotopy for every sampled intermediate frame.
+>>>>>>> Stashed changes
 function evertPosition(u, v, evertT) {
   const N = CONFIG.corrugationLobes;
   const amp = corrugationEnvelope(evertT);
@@ -181,24 +190,39 @@ function sideColor(side, alpha) {
   ];
 }
 
+function depthAlpha(offset) {
+  const dx = surface.positions[offset] - cameraEye.x;
+  const dy = surface.positions[offset + 1] - cameraEye.y;
+  const dz = surface.positions[offset + 2] - cameraEye.z;
+  const distance = Math.hypot(dx, dy, dz);
+  const near = loopState.cameraRadius - CONFIG.fogDepthRange * 0.45;
+  const t = clamp((distance - near) / CONFIG.fogDepthRange, 0, 1);
+  return 1 - smooth01(t) * 0.72;
+}
+
 function drawEvertingLines(alpha, glow) {
   noFill();
   strokeWeight(glow ? CONFIG.glowLineWeight : CONFIG.surfaceLineWeight);
   for (let i = 0; i < CONFIG.uSegments; i += 2) {
+    const major = i % 12 === 0;
+    strokeWeight((glow ? CONFIG.glowLineWeight : CONFIG.surfaceLineWeight) * (major ? 1.35 : 1));
     beginShape();
     for (let j = 0; j < CONFIG.vSegments; j++) {
       const idx = paramIndex(i, j), o = idx * 3;
-      const c = sideColor(surface.side[idx], alpha * (glow ? 22 : 205));
+      const hierarchy = major ? 1 : 0.72;
+      const c = sideColor(surface.side[idx], alpha * (glow ? 22 : 205) * hierarchy * depthAlpha(o));
       stroke(c[0], c[1], c[2], c[3]);
       vertex(surface.positions[o], surface.positions[o + 1], surface.positions[o + 2]);
     }
     endShape();
   }
   for (let j = 0; j < CONFIG.vSegments; j += 2) {
+    const major = j % 8 === 0;
+    strokeWeight((glow ? CONFIG.glowLineWeight : CONFIG.surfaceLineWeight) * (major ? 1.18 : 0.82));
     beginShape();
     for (let i = 0; i <= CONFIG.uSegments; i++) {
       const idx = paramIndex(i, j), o = idx * 3;
-      const c = sideColor(surface.side[idx], alpha * (glow ? 19 : 162));
+      const c = sideColor(surface.side[idx], alpha * (glow ? 19 : 162) * (major ? 1 : 0.7) * depthAlpha(o));
       stroke(c[0], c[1], c[2], c[3]);
       vertex(surface.positions[o], surface.positions[o + 1], surface.positions[o + 2]);
     }
@@ -238,7 +262,28 @@ function applyLoopingCamera() {
   const angle = loopState.cameraAngle + userYaw;
   const radius = loopState.cameraRadius + userZoomOffset;
   const height = loopState.cameraHeight + userPitch * 420;
-  camera(Math.sin(angle) * radius, height, Math.cos(angle) * radius, 0, 0, 0, 0, 1, 0);
+  cameraEye.x = Math.sin(angle) * radius;
+  cameraEye.y = height;
+  cameraEye.z = Math.cos(angle) * radius;
+  camera(cameraEye.x, cameraEye.y, cameraEye.z, 0, 0, 0, 0, 1, 0);
+}
+
+function drawEnvironment() {
+  noFill();
+  strokeWeight(0.7);
+  for (let ring = 0; ring < 3; ring++) {
+    const radius = 470 + ring * 92;
+    stroke(INK.r, INK.g, INK.b, 12 - ring * 2.6);
+    beginShape();
+    for (let i = 0; i <= 96; i++) {
+      const a = (i / 96) * TAU;
+      vertex(Math.cos(a) * radius, Math.sin(a) * radius, -365 - ring * 28);
+    }
+    endShape();
+  }
+  stroke(INK.r, INK.g, INK.b, 10);
+  line(-690, 0, -420, 690, 0, -420);
+  line(0, -690, -420, 0, 690, -420);
 }
 
 function createInterfaceLayers() {
@@ -246,6 +291,16 @@ function createInterfaceLayers() {
   hudPg.pixelDensity(1);
   vignettePg = createGraphics(W, H);
   vignettePg.pixelDensity(1);
+  grainPg = createGraphics(W, H);
+  grainPg.pixelDensity(1);
+  grainPg.clear();
+  grainPg.noStroke();
+  randomSeed(20260820);
+  for (let i = 0; i < Math.floor(W * H * 0.0014); i++) {
+    const value = random(130, 220);
+    grainPg.fill(value, value, value, random(2, 7));
+    grainPg.circle(random(W), random(H), random(0.2, 0.9));
+  }
   const context = vignettePg.drawingContext;
   const gradient = context.createRadialGradient(W / 2, H / 2, 250, W / 2, H / 2, 1040);
   gradient.addColorStop(0, "rgba(0,0,0,0)");
@@ -296,10 +351,10 @@ function renderSimulatorInterface() {
   context.fillStyle = "rgba(255,255,255,.94)";
   context.fillText(active.phase, W / 2, foot + 78);
   context.font = `23px ${mono}`;
-  context.fillText("REGULAR HOMOTOPY  ·  NO CUTS", W / 2, foot + 126);
+  context.fillText("CONTINUOUS SURFACE STUDY  ·  NO CUTS", W / 2, foot + 126);
   context.font = `16px ${mono}`;
   context.fillStyle = "rgba(255,255,255,.42)";
-  context.fillText("SELF-INTERSECTION ALLOWED", W / 2, foot + 170);
+  context.fillText("SELF-INTERSECTION VISUALIZED", W / 2, foot + 170);
   const trackY = foot + 235, trackLeft = 76, trackWidth = W - 152;
   context.strokeStyle = "rgba(255,255,255,.13)";
   context.beginPath(); context.moveTo(trackLeft, trackY); context.lineTo(trackLeft + trackWidth, trackY); context.stroke();
@@ -318,6 +373,7 @@ function renderSimulatorInterface() {
   context.fillText("NO TEARING. NO CUTTING. JUST TOPOLOGY.", W / 2, foot + 272);
   context.restore();
   drawOverlayLayer(vignettePg);
+  drawOverlayLayer(grainPg);
   drawOverlayLayer(hudPg);
 }
 
@@ -351,6 +407,7 @@ function setup() {
 
 function renderScene() {
   applyLoopingCamera();
+  drawEnvironment();
   push();
   rotateX(-0.16);
   rotateY(0.08 * Math.sin(loopState.phase));
