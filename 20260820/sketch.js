@@ -75,27 +75,18 @@ function updateAutomaticTimeline(frameIndex) {
   loopState.cameraHeight = CONFIG.cameraHeight + 52 * Math.sin(loopState.phase);
 }
 
-<<<<<<< Updated upstream
-// Rotate-the-profile-through-itself eversion: a radial/axial (r,y) profile
-// curve is corrugated (amplitude 0 at evertT=0/1, peak mid-morph) then rotated
-// by an inversion angle 0->pi around the profile plane. At evertT=1 the whole
-// surface orientation has flipped — outward has become inward — while the
-// Jacobian never vanishes and the radius never crosses zero, so nothing tears.
-// Broad plateau envelope (fade in, hold, fade out) instead of a narrow sine
-// pulse, so the corrugation is visible across most of the eversion, not just
-// a blip at evertT=0.5. Still 0 at evertT=0/1 for loop-safety and pole calm.
+// Stylized rotate-the-profile-through-itself eversion study: a radial/axial
+// profile is corrugated at the midpoint and rotated toward an inside-out pose.
+// It visualizes the topology without claiming a numerically proven regular
+// homotopy for every sampled intermediate frame. Broad plateau envelope (fade
+// in, hold, fade out) instead of a narrow sine pulse, so the corrugation is
+// visible across most of the eversion. Still 0 at evertT=0/1 for loop-safety.
 function corrugationEnvelope(evertT) {
   const fadeIn = smooth01((evertT - 0.12) / (0.32 - 0.12));
   const fadeOut = 1 - smooth01((evertT - 0.7) / (0.9 - 0.7));
   return fadeIn * fadeOut;
 }
 
-=======
-// Stylized rotate-the-profile-through-itself eversion study: a radial/axial
-// profile is corrugated at the midpoint and rotated toward an inside-out pose.
-// It visualizes the topology without claiming a numerically proven regular
-// homotopy for every sampled intermediate frame.
->>>>>>> Stashed changes
 function evertPosition(u, v, evertT) {
   const N = CONFIG.corrugationLobes;
   const amp = corrugationEnvelope(evertT);
