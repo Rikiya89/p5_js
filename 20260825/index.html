@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>20260825 — Ricci Flow</title>
+  <script src="../p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #000; overflow: hidden; font-family: ui-monospace, "Menlo", "Consolas", monospace; }
+    canvas { display: block; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 100vw; max-height: 100vh; width: auto; height: 100vh; object-fit: contain; }
+    #controls { position: fixed; top: 18px; left: 18px; background: rgba(0,0,0,0.82); padding: 14px 16px; border-radius: 14px; color: #bbb; z-index: 100; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(14px); min-width: 320px; max-width: calc(100vw - 36px); }
+    #controls strong { color: #fff; font-size: clamp(13px, 1.1vw + 9px, 15px); letter-spacing: 0.14em; }
+    #controls > div:first-child { margin-bottom: 8px; }
+    button { background: rgba(40,40,40,0.9); color: #f0f0f0; border: 1px solid rgba(255,255,255,0.15); padding: 8px 15px; margin: 4px 5px 0 0; border-radius: 999px; cursor: pointer; font-size: clamp(13px, 1vw + 9px, 14px); font-family: inherit; letter-spacing: 0.06em; }
+    button:hover { background: rgba(70,70,70,0.9); border-color: rgba(255,255,255,0.3); }
+    button:disabled { color: #555; cursor: not-allowed; border-color: rgba(255,255,255,0.06); }
+    #status { margin-top: 9px; font-size: clamp(13px, 1vw + 9px, 14px); color: #ccc; }
+    #info { font-size: clamp(12px, 0.8vw + 8px, 13px); color: #777; margin-top: 6px; line-height: 1.8; }
+    #info span { color: #ccc; }
+    #progressTrack { margin-top: 8px; height: 4px; width: 100%; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden; }
+    #progressFill { height: 100%; width: 0%; background: #fff; transition: width 80ms linear; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div><strong>20260825 — RICCI FLOW</strong></div>
+    <button id="startBtn">Record</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <div id="status">Ready</div>
+    <div id="progressTrack"><div id="progressFill"></div></div>
+    <div id="info">
+      Duration: <span id="duration">0.0</span>s / <span id="maxDuration">10</span>s<br>
+      Frames: <span id="frameCount">0</span> / <span id="maxFrames">—</span><br>
+      Canvas: <span id="canvasSize">—</span><br>
+      Shortcut: <span>R</span> record · <span>S</span> still
+    </div>
+  </div>
+  <script src="sketch.js"></script>
+</body>
+</html>
