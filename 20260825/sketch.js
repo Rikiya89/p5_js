@@ -18,7 +18,7 @@ const ACID = { r: 182, g: 255, b: 61 };
 const CONFIG = {
   surfaceUSegments: 96,
   surfaceVSegments: 48,
-  sphereRadius: 300,
+  sphereRadius: 240,
 
   // Initial deformation field: axisymmetric "kv" lobe modes (nonzero at the
   // poles, r = R(1 + amp*cos(kv*v))) drive the large-scale dumbbell/peanut
@@ -525,7 +525,8 @@ function renderBloomSource() {
       const idx = paramIndex(i, j);
       const offset = idx * 3;
       const a = curvatureAlpha(surface.curvature[idx], 150, curvatureVis) * fogFactor(viewDepthAt(offset));
-      b.stroke(INK.r, INK.g, INK.b, a);
+      const bc = curvatureColor(surface.curvature[idx]);
+      b.stroke(bc.r, bc.g, bc.b, a);
       b.vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     b.endShape();
@@ -635,6 +636,18 @@ function curvatureAlpha(curvature, baseAlpha, curvatureVis) {
   return baseAlpha * (flat + (0.55 + 0.75 * curvature - flat) * vis);
 }
 
+// Curvature heatmap: CYAN (low, flat regions) -> MAGENTA (high, pinched
+// regions) -- matches the existing curvature-intensity semantics with hue
+// instead of only brightness/weight.
+function curvatureColor(curvature) {
+  const t = clamp(curvature, 0, 1);
+  return {
+    r: CYAN.r + (MAGENTA.r - CYAN.r) * t,
+    g: CYAN.g + (MAGENTA.g - CYAN.g) * t,
+    b: CYAN.b + (MAGENTA.b - CYAN.b) * t,
+  };
+}
+
 function drawFlowWireframe() {
   // ADD makes overlapping high-curvature strokes brightest, reinforcing the
   // curvature-intensity read without needing hue.
@@ -652,7 +665,8 @@ function drawFlowWireframe() {
       const ribGain = isRib ? 1.35 : 0.62;
       strokeWeight(CONFIG.surfaceLineWeight * (isRib ? 1.7 : 1) * (0.85 + 0.5 * c));
       const a = curvatureAlpha(c, baseAlpha, curvatureVis) * ribGain * fogFactor(viewDepthAt(offset));
-      stroke(INK.r, INK.g, INK.b, a);
+      const rc = curvatureColor(c);
+      stroke(rc.r, rc.g, rc.b, a);
       vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     endShape();
@@ -664,8 +678,10 @@ function drawFlowWireframe() {
     for (let i = 0; i <= uSeg; i++) {
       const idx = paramIndex(i, j);
       const offset = idx * 3;
-      const a = curvatureAlpha(surface.curvature[idx], baseAlpha * 0.5, curvatureVis) * fogFactor(viewDepthAt(offset));
-      stroke(INK.r, INK.g, INK.b, a);
+      const c = surface.curvature[idx];
+      const a = curvatureAlpha(c, baseAlpha * 0.5, curvatureVis) * fogFactor(viewDepthAt(offset));
+      const vc = curvatureColor(c);
+      stroke(vc.r, vc.g, vc.b, a);
       vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     endShape();
@@ -699,7 +715,7 @@ function drawFlowVectors(vectorVis) {
       const vx = mx - px, vy = my - py, vz = mz - pz;
       const s = 2.4;
       const a = 90 * c * vectorVis * fogFactor(viewDepthAt(o));
-      stroke(INK.r, INK.g, INK.b, a);
+      stroke(ACID.r, ACID.g, ACID.b, a);
       line(px, py, pz, px + vx * s, py + vy * s, pz + vz * s);
     }
   }

@@ -23,7 +23,7 @@ const CONFIG = {
   openingOffset: 0,        // frame 0 opens on a bare sphere; Morin blend magnitude makes ripple-offset unnecessary
   surfaceLineWeight: 1.28,
   cameraDistance: 1500,
-  cameraMaxDistance: 2100,
+  cameraMaxDistance: 2300,
   cameraOrbitAmount: 126,
   framingFill: 0.82,
   fogDepthRange: 920,
