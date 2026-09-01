@@ -43,6 +43,10 @@ const CONFIG = {
   flowTauMax: 2.2,
 
   surfaceLineWeight: 1.28,
+  surfaceVisualScale: 1.07,
+  historyDelays: [0.035, 0.075, 0.12], // fractions of the deterministic loop
+  historyOpacities: [0.16, 0.08, 0.04],
+  equilibriumBreathing: 0.007,
   cameraDistance: 1500,
   cameraMaxDistance: 2100,
   cameraOrbitAmount: 126,
@@ -53,18 +57,27 @@ const CONFIG = {
 };
 
 // Boundaries below are the single source of truth for the whole synchronized
-// system (formula highlight, curvature heatmap, flow vectors, HUD labels) --
-// see getFormulaPhase(). Keep PHASES and those boundaries in lockstep.
-const PHASE_BOUNDS = { geomEnd: 0.15, curvEnd: 0.30, flowMid: 0.48, flowEnd: 0.65, uniformEnd: 0.85 };
+// system (formula highlight, deformation emphasis, flow vectors, HUD labels).
+// Keep the original final 15% for the smooth internal loop transition.
+const PHASE_BOUNDS = { geomEnd: 0.12, curvEnd: 0.20, flowMid: 0.44, flowEnd: 0.66, uniformStart: 0.76, uniformEnd: 0.85 };
 
 const PHASES = [
-  { key: "GEOMETRY", label: "01 · gij · GEOMETRY", note: "THIS IS THE CURRENT METRIC" },
-  { key: "CURVATURE", label: "02 · Rij · CURVATURE", note: "HIGH-CURVATURE REGIONS ARE FLAGGED" },
-  { key: "FLOW", label: "03 · -2Rij · FLOW", note: "CURVATURE DRIVES THE FLOW" },
-  { key: "EVOLUTION", label: "04 · dgij/dt · EVOLUTION", note: "THE GEOMETRY CHANGES" },
-  { key: "UNIFORM", label: "05 · RICCI FLOW · UNIFORMITY", note: "THE SURFACE BECOMES SMOOTHER" },
-  { key: "RETURN", label: "06 · gij · RETURN", note: "THE LOOP RESETS TO GEOMETRY" },
+  { key: "GEOMETRY", label: "01 · INITIAL METRIC" },
+  { key: "FLOW", label: "02 · CURVATURE FLOW" },
+  { key: "EVOLUTION", label: "03 · SMOOTHING" },
+  { key: "NORMALIZATION", label: "04 · NORMALIZATION" },
+  { key: "UNIFORM", label: "05 · UNIFORM METRIC" },
 ];
+
+const HUD = {
+  safeX: 56,
+  stageY: 374,
+  trackY: 418,
+  bottomMainAlpha: 140,
+  bottomProcessAlpha: 115,
+  citationAlpha: 64,
+  normalizationAlpha: 205,
+};
 
 const uSeg = CONFIG.surfaceUSegments;
 const vSeg = CONFIG.surfaceVSegments;
@@ -74,10 +87,13 @@ const pointCount = uSeg * vSeg;
 // per-vertex curvature-intensity array normalized into [0,1] at bake time.
 let flowStates = [];      // positions per state
 let flowCurvatures = [];  // curvature intensity per state
+let initialDeformationMax = 1e-6;
 
 const surface = {
   positions: new Float32Array(pointCount * 3),
   curvature: new Float32Array(pointCount),
+  deformation: new Float32Array(pointCount),
+  colors: new Float32Array(pointCount * 3),
 };
 
 let canvasEl = null;
@@ -214,6 +230,7 @@ function buildFlowStates() {
         const [x, y, z] = sphericalToXYZ(u, v, r);
         const idx = paramIndex(i, j);
         pos[idx * 3] = x; pos[idx * 3 + 1] = y; pos[idx * 3 + 2] = z;
+        if (s === 0) initialDeformationMax = Math.max(initialDeformationMax, Math.abs(r - CONFIG.sphereRadius));
       }
     }
     flowStates.push(pos);
@@ -226,8 +243,9 @@ function buildFlowStates() {
 // Per-vertex curvature intensity C_i = |L(p_i)| (graph-Laplacian defect: how
 // far a point sits from the mean of its neighbors), normalized against a
 // FIXED reference -- state 0's peak -- rather than each state's own max, so
-// the highlight layer actually fades toward zero as the surface flattens
-// instead of being re-stretched to full range every state.
+// the intensity isn't re-stretched to full range every state. This is a
+// graph-Laplacian proxy, not a Ricci tensor or an exact curvature heatmap;
+// it remains nonzero on the round sphere. Hue uses radial deformation instead.
 function computeCurvature(pos, refMaxC) {
   const c = new Float32Array(pointCount);
   let maxC = 1e-6;
@@ -289,7 +307,12 @@ const FLOW_KEYS = [
   { t: 0, v: 0 },
   { t: PHASE_BOUNDS.geomEnd, v: 0 },
   { t: PHASE_BOUNDS.curvEnd, v: 0 },
-  { t: PHASE_BOUNDS.flowEnd, v: 0.92 },
+  // Hold the asymmetric modes long enough for SMOOTHING to read as an
+  // in-progress relaxation, then concentrate convergence into NORMALIZATION.
+  { t: 0.40, v: 0.20 },
+  { t: 0.62, v: 0.24 },
+  { t: 0.75, v: 0.70 },
+  { t: PHASE_BOUNDS.uniformStart, v: 0.72 },
   { t: PHASE_BOUNDS.uniformEnd, v: 1 },
   { t: 1, v: 0 },
 ];
@@ -302,39 +325,57 @@ function updateLoopTime() {
   const frame = isRecording ? recFrameCount : frameCount - 1;
   loopProgress = (((frame % LOOP_FRAMES) + LOOP_FRAMES) % LOOP_FRAMES) / LOOP_FRAMES;
   phase = loopProgress * TAU;
-  // flowT holds at 0 through GEOMETRY+CURVATURE (0-30%) so the viewer can
-  // inspect the problem surface, ramps hardest through FLOW (30-65%),
-  // plateaus at 1 through UNIFORM (65-85%), then returns to exactly 0 by
-  // t=1 -- matching PHASE_BOUNDS and the REEL TIMELINE spec exactly.
+  // Global loop progress drives the timeline; flowT separately drives the
+  // baked relaxation ladder, including its equilibrium hold and smooth return.
   flowT = flowEnvelope(loopProgress);
 }
 
-// Single source of truth for "what is the formula/HUD emphasizing right now".
-// Every visual subsystem (curvature heatmap, flow vectors, formula alpha,
-// HUD label) reads from this instead of keeping an independent boundary set.
+// Labels follow global time, independently of the non-linear relaxation.
+// The round endpoint is an approximation, not a computed Ricci-flow solution.
 function currentPhaseInfo() {
-  const t = loopProgress;
-  const b = PHASE_BOUNDS;
-  if (t < b.geomEnd) return PHASES[0];
-  if (t < b.curvEnd) return PHASES[1];
-  if (t < b.flowMid) return PHASES[2];
-  if (t < b.flowEnd) return PHASES[3];
-  if (t < b.uniformEnd) return PHASES[4];
-  return PHASES[5];
+  // The transition back to the initial metric is internal; the scientific
+  // interface remains on the uniform metric through the end of the cycle.
+  if (loopProgress >= PHASE_BOUNDS.uniformStart) return PHASES[4];
+  if (loopProgress >= PHASE_BOUNDS.flowEnd) return PHASES[3];
+  if (loopProgress >= PHASE_BOUNDS.flowMid) return PHASES[2];
+  if (loopProgress >= PHASE_BOUNDS.curvEnd) return PHASES[1];
+  return PHASES[0];
 }
 
-// Continuous curvature-heatmap visibility: near-zero during GEOMETRY (keep
-// the mesh itself easiest to read), ramps to full through CURVATURE, stays
-// lit through FLOW, fades back toward zero as UNIFORM settles in (heatmap
-// has nothing left to show once curvature is ~gone), zero again at the loop
-// seam so it matches the GEOMETRY-phase look on return.
+// No frame history is stored: sample the existing state ladder at three
+// earlier times, in the current camera pose. Scrubbing/recording is stateless.
+function historyVisibility(t) {
+  const b = PHASE_BOUNDS;
+  const appear = smoothstepSegment(t, b.curvEnd, b.curvEnd + 0.08, 0, 1);
+  const settle = smoothstepSegment(t, b.flowEnd - 0.08, b.uniformStart, 1, 0);
+  return appear * settle;
+}
+
+function normalizationVisibility(t) {
+  const b = PHASE_BOUNDS;
+  return smoothstepSegment(t, b.flowEnd - 0.06, b.uniformStart, 0, 1) *
+    smoothstepSegment(t, b.uniformEnd, 1, 1, 0);
+}
+
+function equilibriumWeight(t) {
+  const b = PHASE_BOUNDS;
+  return smoothstepSegment(t, b.flowEnd, b.uniformStart, 0, 1) *
+    smoothstepSegment(t, b.uniformEnd, 1, 1, 0);
+}
+
+function equilibriumScale() {
+  // Uniform scaling only: the stable sphere never acquires new lobe modes.
+  return 1 + CONFIG.equilibriumBreathing * equilibriumWeight(loopProgress) * Math.sin(phase * 2);
+}
+
+// Continuous brightness emphasis. Hue separately follows radial deformation.
 function getCurvatureVisibility(t) {
   const b = PHASE_BOUNDS;
-  if (t < b.geomEnd) return smoothstepSegment(t, 0, b.geomEnd, 0.15, 0.15);
-  if (t < b.curvEnd) return smoothstepSegment(t, b.geomEnd, b.curvEnd, 0.15, 1);
+  if (t < b.geomEnd) return 0.55;
+  if (t < b.curvEnd) return smoothstepSegment(t, b.geomEnd, b.curvEnd, 0.55, 1);
   if (t < b.flowEnd) return 1;
   if (t < b.uniformEnd) return smoothstepSegment(t, b.flowEnd, b.uniformEnd, 1, 0.25);
-  return smoothstepSegment(t, b.uniformEnd, 1, 0.25, 0.15);
+  return smoothstepSegment(t, b.uniformEnd, 1, 0.25, 0.55);
 }
 
 // Flow vectors only make sense while curvature is actively driving motion:
@@ -353,7 +394,7 @@ function getVectorVisibility(t) {
 // per spec; active term(s) for the current phase go to full weight.
 // -2Rij and Rij overlap on purpose: FLOW lights both "-2" and "Rij" while
 // CURVATURE lights only "Rij".
-const DIM = 0.30, LIT = 1.0;
+const DIM = 0.55, LIT = 1.0;
 const eqB = PHASE_BOUNDS;
 // Keyframe tables per equation token, all sharing PHASE_BOUNDS as the single
 // source of truth for timing. dt aliases dg (they're the same "d/dt g"
@@ -409,24 +450,8 @@ function getEquationHighlight(t) {
     eq: envelopeAt(EQ_KEYS.eq, t),
     m2: envelopeAt(EQ_KEYS.m2, t),
     Rij: envelopeAt(EQ_KEYS.Rij, t),
+    normalization: normalizationVisibility(t),
   };
-}
-
-// Second formula line (normalized Ricci flow) is revealed only once UNIFORM
-// begins, since that's where the +（2r/n)g volume-preserving correction
-// becomes the visible story. The sphere in this sketch already holds its
-// radius rather than collapsing, i.e. it has been depicting normalized flow
-// throughout — this envelope controls when that's shown on screen, not
-// when the term is "active".
-const NORM_VIS_KEYS = [
-  { t: 0, v: 0 },
-  { t: eqB.flowEnd, v: 0 },
-  { t: eqB.uniformEnd, v: 1 },
-  { t: 1, v: 0 },
-];
-
-function getNormFormulaVis(t) {
-  return envelopeAt(NORM_VIS_KEYS, t);
 }
 
 function draw() {
@@ -465,6 +490,11 @@ function updateFlowSurface() {
     surface.positions[o + 1] = y;
     surface.positions[o + 2] = z;
     surface.curvature[idx] = ca[idx] + (cb[idx] - ca[idx]) * blend;
+    // Actual radial displacement from the target radius, normalized once
+    // against the initial surface. Not a scientific curvature measurement.
+    const deformation = clamp(Math.abs(Math.hypot(x, y, z) - CONFIG.sphereRadius) / initialDeformationMax, 0, 1);
+    surface.deformation[idx] = deformation;
+    deformationColor(deformation, surface.colors, o);
 
     const lateral = Math.hypot(x, z);
     if (lateral > peak) peak = lateral;
@@ -484,9 +514,12 @@ function renderFrame() {
   perspective(PI / 3.35, W / H, 10, 5000);
   drawEnvironment();
   push();
+  scale(CONFIG.surfaceVisualScale);
   rotateX(surfaceViewTilt());
   rotateZ(surfaceViewRoll());
   rotateY(-0.22 + 0.11 * Math.sin(phase));
+  drawFlowHistory();
+  scale(equilibriumScale());
   drawFlowWireframe();
   const vectorVis = getVectorVisibility(loopProgress);
   if (CONFIG.showFlowVectors && vectorVis > 0.002) drawFlowVectors(vectorVis);
@@ -514,6 +547,8 @@ function renderBloomSource() {
   b.blendMode(ADD);
   b.noFill();
   b.push();
+  b.scale(CONFIG.surfaceVisualScale);
+  b.scale(equilibriumScale());
   b.rotateX(surfaceViewTilt());
   b.rotateZ(surfaceViewRoll());
   b.rotateY(-0.22 + 0.11 * Math.sin(phase));
@@ -525,8 +560,7 @@ function renderBloomSource() {
       const idx = paramIndex(i, j);
       const offset = idx * 3;
       const a = curvatureAlpha(surface.curvature[idx], 150, curvatureVis) * fogFactor(viewDepthAt(offset));
-      const bc = curvatureColor(surface.curvature[idx]);
-      b.stroke(bc.r, bc.g, bc.b, a);
+      b.stroke(surface.colors[offset], surface.colors[offset + 1], surface.colors[offset + 2], a);
       b.vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     b.endShape();
@@ -538,7 +572,7 @@ function renderBloomSource() {
 function streakBloom() {
   const s = bloomStreakPg;
   const taps = 14;
-  const spread = 9;
+  const spread = 7;
   s.clear();
   s.push();
   s.blendMode(ADD);
@@ -546,7 +580,7 @@ function streakBloom() {
   const cx = s.width / 2, cy = s.height / 2;
   for (let k = -taps; k <= taps; k++) {
     const falloff = 1 - Math.abs(k) / taps;
-    s.tint(255, 255, 255, 28 * falloff * falloff);
+    s.tint(255, 255, 255, 22 * falloff * falloff);
     s.image(bloomPg, cx + k * spread, cy);
   }
   s.pop();
@@ -623,34 +657,67 @@ function drawEnvironment() {
   line(0, -fieldRadius - 82, -330, 0, fieldRadius + 82, -330);
 }
 
-// Monochrome curvature encoding: brightness + line weight rise with local
-// curvature intensity, so high-curvature regions read as brighter/thicker
-// without introducing a second color system (project stays strict ink-only).
-// curvatureVis (0..1) is the phase-driven heatmap visibility from
-// getCurvatureVisibility(): near 0 during GEOMETRY keeps the mesh itself the
-// brightest, readable thing on screen; near 1 during CURVATURE/FLOW lets
-// high-curvature vertices dominate.
+// Restrained brightness encoding of the existing graph-Laplacian proxy.
 function curvatureAlpha(curvature, baseAlpha, curvatureVis) {
   const vis = curvatureVis === undefined ? 1 : curvatureVis;
   const flat = 0.78;
   return baseAlpha * (flat + (0.55 + 0.75 * curvature - flat) * vis);
 }
 
-// Curvature heatmap: CYAN (low, flat regions) -> MAGENTA (high, pinched
-// regions) -- matches the existing curvature-intensity semantics with hue
-// instead of only brightness/weight.
-function curvatureColor(curvature) {
-  const t = clamp(curvature, 0, 1);
-  return {
-    r: CYAN.r + (MAGENTA.r - CYAN.r) * t,
-    g: CYAN.g + (MAGENTA.g - CYAN.g) * t,
-    b: CYAN.b + (MAGENTA.b - CYAN.b) * t,
-  };
+// Artistic deformation emphasis, not an exact curvature heatmap. Keep the
+// existing cyan-to-magenta palette; intermediate values read blue/violet.
+// Cache RGB in a fixed buffer, avoiding color-object allocations per pass.
+function deformationColor(deformation, colors, offset) {
+  const t = 0.92 * smooth01(Math.pow(deformation, 0.65));
+  colors[offset] = CYAN.r + (MAGENTA.r - CYAN.r) * t;
+  colors[offset + 1] = CYAN.g + (MAGENTA.g - CYAN.g) * t;
+  colors[offset + 2] = CYAN.b + (MAGENTA.b - CYAN.b) * t;
+}
+
+function drawFlowHistory() {
+  const visibility = historyVisibility(loopProgress);
+  if (visibility <= 0.001) return;
+  noFill();
+  blendMode(ADD);
+  // Faint historical lines must never write depth over the current mesh.
+  drawingContext.depthMask(false);
+  strokeWeight(CONFIG.surfaceLineWeight * 0.8);
+  for (let h = CONFIG.historyDelays.length - 1; h >= 0; h--) {
+    const pastT = flowEnvelope(Math.max(0, loopProgress - CONFIG.historyDelays[h]));
+    const stateF = pastT * (flowStates.length - 1);
+    const i0 = Math.floor(stateF), i1 = Math.min(i0 + 1, flowStates.length - 1);
+    const a = flowStates[i0], b = flowStates[i1], blend = stateF - i0;
+    // Fade coincident traces rather than brightening a static initial mesh.
+    const separation = smooth01((flowT - pastT) / 0.12);
+    const alpha = 176 * CONFIG.historyOpacities[h] * visibility * separation;
+    if (alpha <= 0.1) continue;
+    stroke((CYAN.r + MAGENTA.r) * 0.5, (CYAN.g + MAGENTA.g) * 0.5, (CYAN.b + MAGENTA.b) * 0.5, alpha);
+    // Six sparse meridians plus three latitudes per history sample.
+    for (let i = 0; i < uSeg; i += 16) {
+      beginShape();
+      for (let j = 0; j < vSeg; j += 2) historyVertex(a, b, blend, paramIndex(i, j));
+      historyVertex(a, b, blend, paramIndex(i, vSeg - 1));
+      endShape();
+    }
+    for (let j = 12; j < vSeg; j += 12) {
+      beginShape();
+      for (let i = 0; i <= uSeg; i += 4) historyVertex(a, b, blend, paramIndex(i, j));
+      endShape();
+    }
+  }
+  drawingContext.depthMask(true);
+  blendMode(BLEND);
+}
+
+function historyVertex(a, b, blend, idx) {
+  const o = idx * 3;
+  vertex(a[o] + (b[o] - a[o]) * blend,
+    a[o + 1] + (b[o + 1] - a[o + 1]) * blend,
+    a[o + 2] + (b[o + 2] - a[o + 2]) * blend);
 }
 
 function drawFlowWireframe() {
-  // ADD makes overlapping high-curvature strokes brightest, reinforcing the
-  // curvature-intensity read without needing hue.
+  // The crisp current surface stays dominant over sparse historical traces.
   blendMode(ADD);
   const baseAlpha = 176;
   const curvatureVis = getCurvatureVisibility(loopProgress);
@@ -665,8 +732,7 @@ function drawFlowWireframe() {
       const ribGain = isRib ? 1.35 : 0.62;
       strokeWeight(CONFIG.surfaceLineWeight * (isRib ? 1.7 : 1) * (0.85 + 0.5 * c));
       const a = curvatureAlpha(c, baseAlpha, curvatureVis) * ribGain * fogFactor(viewDepthAt(offset));
-      const rc = curvatureColor(c);
-      stroke(rc.r, rc.g, rc.b, a);
+      stroke(surface.colors[offset], surface.colors[offset + 1], surface.colors[offset + 2], a * (1 + 0.18 * surface.deformation[idx]));
       vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     endShape();
@@ -680,8 +746,7 @@ function drawFlowWireframe() {
       const offset = idx * 3;
       const c = surface.curvature[idx];
       const a = curvatureAlpha(c, baseAlpha * 0.5, curvatureVis) * fogFactor(viewDepthAt(offset));
-      const vc = curvatureColor(c);
-      stroke(vc.r, vc.g, vc.b, a);
+      stroke(surface.colors[offset], surface.colors[offset + 1], surface.colors[offset + 2], a);
       vertex(surface.positions[offset], surface.positions[offset + 1], surface.positions[offset + 2]);
     }
     endShape();
@@ -715,23 +780,31 @@ function drawFlowVectors(vectorVis) {
       const vx = mx - px, vy = my - py, vz = mz - pz;
       const s = 2.4;
       const a = 90 * c * vectorVis * fogFactor(viewDepthAt(o));
-      stroke(ACID.r, ACID.g, ACID.b, a);
+      stroke(surface.colors[o], surface.colors[o + 1], surface.colors[o + 2], a);
       line(px, py, pz, px + vx * s, py + vy * s, pz + vz * s);
     }
   }
   blendMode(BLEND);
 }
 
-function flowPercentText() {
-  return Math.round(flowT * 100) + "%";
+function displayProgress() {
+  // Include both endpoints across the 600 displayed frames, without changing
+  // the geometry's periodic clock. Only the last frame reaches a full 100%.
+  const frame = Math.round(loopProgress * LOOP_FRAMES);
+  return clamp(frame / Math.max(1, LOOP_FRAMES - 1), 0, 1);
+}
+
+function flowPercentText(progress) {
+  // Do not round an unfinished bar up to 100%.
+  return Math.floor(progress * 100) + "%";
 }
 
 // Tokenized formula: dg_ij / dt = -2 R_ij, drawn as separate pieces so each
 // term's alpha can follow getEquationHighlight(loopProgress) independently.
 // Subscripts drawn as smaller offset text rather than relying on the ᵢⱼ
 // Unicode glyphs, which are commonly missing from monospace font stacks.
-const FORMULA_BASE_SIZE = 24;
-const FORMULA_SUB_SIZE = 15;
+const FORMULA_BASE_SIZE = 34;
+const FORMULA_SUB_SIZE = 21;
 const FORMULA_TOKENS = [
   { text: "dg", weightKey: "dg" },
   { text: "ij", sub: true, weightKey: "dg" },
@@ -741,22 +814,8 @@ const FORMULA_TOKENS = [
   { text: "-2", weightKey: "m2" },
   { text: "R", weightKey: "Rij" },
   { text: "ij", sub: true, weightKey: "Rij" },
-];
-
-// Normalized form: dg_ij/dt = -2 R_ij + (2r/n) g_ij. Uses a single flat
-// weight (its own fade envelope) rather than per-token highlighting —
-// this line is a reveal, not a phase-by-phase highlight sequence.
-const NORM_FORMULA_TOKENS = [
-  { text: "dg" },
-  { text: "ij", sub: true },
-  { text: " / " },
-  { text: "dt" },
-  { text: "  =  " },
-  { text: "-2R" },
-  { text: "ij", sub: true },
-  { text: "  +  " },
-  { text: "(2r/n)g" },
-  { text: "ij", sub: true },
+  { text: " + (2r/n)g", weightKey: "normalization" },
+  { text: "ij", sub: true, weightKey: "normalization" },
 ];
 
 function drawFormula(g, cx, cy, tokens, weights, alphaScale = 1) {
@@ -766,7 +825,9 @@ function drawFormula(g, cx, cy, tokens, weights, alphaScale = 1) {
   const widths = tokens.map((tok) => {
     g.textSize(tok.sub ? FORMULA_SUB_SIZE : FORMULA_BASE_SIZE);
     const w = g.textWidth(tok.text);
-    totalW += w;
+    // Reserve the correction term progressively so one equation expands
+    // smoothly in place, instead of adding a competing second formula.
+    totalW += w * (tok.weightKey === "normalization" ? weights.normalization : 1);
     return w;
   });
   let x = cx - totalW * 0.5;
@@ -774,7 +835,7 @@ function drawFormula(g, cx, cy, tokens, weights, alphaScale = 1) {
   for (let k = 0; k < tokens.length; k++) {
     const tok = tokens[k];
     const wgt = tok.weightKey ? weights[tok.weightKey] : weights.flat;
-    const alphaMax = 210;
+    const alphaMax = tok.weightKey === "normalization" ? HUD.normalizationAlpha : 235;
     g.fill(INK.r, INK.g, INK.b, alphaMax * wgt * alphaScale);
     g.textSize(tok.sub ? FORMULA_SUB_SIZE : FORMULA_BASE_SIZE);
     g.text(tok.text, x, tok.sub ? cy + 7 : cy);
@@ -786,6 +847,7 @@ function drawFormula(g, cx, cy, tokens, weights, alphaScale = 1) {
 function drawScreenFinish() {
   const g = hudPg;
   const info = currentPhaseInfo();
+  const progress = displayProgress();
   g.clear();
   g.image(grainPg, 0, 0);
   g.noFill();
@@ -797,54 +859,56 @@ function drawScreenFinish() {
   g.line(m, H - m, m + l, H - m); g.line(m, H - m, m, H - m - l);
   g.line(W - m, H - m, W - m - l, H - m); g.line(W - m, H - m, W - m, H - m - l);
 
-  // Exact existing typography settings, positions, alignment, spacing, and hierarchy.
+  // Serif title and restrained scientific labels, sized for vertical mobile viewing.
   g.noStroke();
-  g.textFont("ui-monospace, Menlo, Consolas, monospace");
+  g.textFont("Georgia");
   g.textAlign(CENTER, CENTER);
   g.textStyle(BOLD);
   g.fill(INK.r, INK.g, INK.b, 246);
-  g.textSize(54);
-  g.text("RICCI FLOW", W * 0.5, 222);
+  g.textSize(72);
+  g.text("RICCI FLOW", W * 0.5, 210);
   g.textStyle(NORMAL);
-  drawFormula(g, W * 0.5, 278, FORMULA_TOKENS, getEquationHighlight(loopProgress));
-  const normVis = getNormFormulaVis(loopProgress);
-  if (normVis > 0.001) {
-    drawFormula(g, W * 0.5, 314, NORM_FORMULA_TOKENS, { flat: 1 }, normVis);
-  }
-  g.fill(INK.r, INK.g, INK.b, 92);
-  g.textSize(17);
-  g.text("CURVATURE  ->  UNIFORMIZATION", W * 0.5, 352);
+  g.textFont("monospace");
+  drawFormula(g, W * 0.5, 276, FORMULA_TOKENS, getEquationHighlight(loopProgress));
+  g.fill(INK.r, INK.g, INK.b, 166);
+  g.textSize(26);
+  g.text("CURVATURE → UNIFORMITY", W * 0.5, 326);
 
+  // Isolate alignment from the centered header and right-aligned percentage.
+  g.push();
   g.textAlign(LEFT, TOP);
-  g.fill(INK.r, INK.g, INK.b, 100);
-  g.textSize(19);
-  g.text(info.label, 70, 372);
+  g.fill(INK.r, INK.g, INK.b, 235);
+  g.textSize(26);
+  g.text(info.label, HUD.safeX, HUD.stageY);
   g.textAlign(RIGHT, TOP);
-  g.text(flowPercentText(), W - 70, 372);
+  g.textSize(22);
+  g.text("ANIMATION · " + flowPercentText(progress), W - HUD.safeX, HUD.stageY + 3);
 
-  const trackX = 70, trackY = 416, trackW = W - 140;
+  const trackX = HUD.safeX, trackY = HUD.trackY, trackEndX = W - HUD.safeX;
+  const progressX = lerp(trackX, trackEndX, progress);
   g.stroke(INK.r, INK.g, INK.b, 34);
   g.strokeWeight(1);
-  g.line(trackX, trackY, trackX + trackW, trackY);
+  g.line(trackX, trackY, trackEndX, trackY);
   g.stroke(INK.r, INK.g, INK.b, 184);
   g.strokeWeight(2.2);
-  g.line(trackX, trackY, trackX + trackW * loopProgress, trackY);
+  g.line(trackX, trackY, progressX, trackY);
   g.noStroke();
-  for (const marker of [0, 0.25, 0.5, 0.75, 1]) {
-    g.fill(INK.r, INK.g, INK.b, marker === 0.5 ? 170 : 78);
-    g.circle(trackX + trackW * marker, trackY, marker === 0.5 ? 6 : 4);
-  }
-
+  g.fill(INK.r, INK.g, INK.b, 235);
+  g.circle(progressX, trackY, 8);
+  g.pop();
   g.textAlign(CENTER, CENTER);
-  g.fill(INK.r, INK.g, INK.b, 72 + 164 * smooth01(Math.sin(flowT * Math.PI)));
+  g.fill(INK.r, INK.g, INK.b, HUD.bottomMainAlpha);
+  g.textSize(26);
+  g.text(info.key === "UNIFORM" ? "UNIFORM METRIC" : "CURRENT METRIC", W * 0.5, 1510);
+  g.textSize(30);
+  g.fill(INK.r, INK.g, INK.b, HUD.bottomProcessAlpha);
+  g.text("IRREGULAR → FLOWING → UNIFORM", W * 0.5, 1560);
+  g.textSize(28);
+  g.fill(INK.r, INK.g, INK.b, HUD.bottomMainAlpha);
+  g.text("CURVATURE EVOLVES TOWARD A SMOOTHER GEOMETRY", W * 0.5, 1614);
   g.textSize(22);
-  g.text(info.note, W * 0.5, 1482);
-  g.textSize(17);
-  g.fill(INK.r, INK.g, INK.b, 130);
-  g.text("IRREGULAR  ->  FLOW  ->  UNIFORM  ->  RETURN", W * 0.5, 1514);
-  g.textSize(13);
-  g.fill(INK.r, INK.g, INK.b, 64);
-  g.text("POSITIVE CURVATURE -> SMOOTH CONVERGENCE, NO SINGULARITY (HAMILTON 1982)", W * 0.5, 1540);
+  g.fill(INK.r, INK.g, INK.b, HUD.citationAlpha);
+  g.text("FLOW-INSPIRED STUDY · HAMILTON · 1982", W * 0.5, 1680);
 
   push();
   drawingContext.disable(drawingContext.DEPTH_TEST);
