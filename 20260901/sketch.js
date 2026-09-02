@@ -43,17 +43,30 @@ const CONFIG = {
   contourCount: 8,           // 12 -> 8, placed by percentile (see
                               // updateContours) so each level lands where the
                               // curvature distribution actually has vertices.
-  temporalEchoCount: 2,
-  echoStride: 10,           // must divide LOOP_FRAMES evenly (600 / 10 = 60)
-  echoAlpha: [18, 7],        // memory stays below restored live structure
-                             // dimmed further per the brief's echo range.
+
+  // --- Temporal history ring (§02/§16/§17) ---------------------------------
+  // Now captured EVERY frame, not every 10th. The ring feeds two consumers:
+  //   - drawTemporalEchoes(), which samples it sparsely (echoDrawAge) exactly
+  //     as before, and
+  //   - the membrane layers, which read a small lag per layer (MEMBRANE.lag).
+  // A stride > 1 is fatal to the second consumer: the layers would snap to a
+  // new state every stride frames instead of trailing smoothly. Per-frame
+  // capture costs 4608 verts * 3 * 4B = 55KB per slot -- irrelevant.
+  temporalEchoCount: 18,     // ring depth in FRAMES; must exceed max lag used
+                             // (§32-15 raised the outermost film lag to 15)
+  echoStride: 1,             // per-frame capture; see above
+  echoDrawAge: [7, 13],      // which ring ages drawTemporalEchoes() strokes
+  echoAlpha: [15, 6],        // memory stays below restored live structure
 
   ribStride: 19,             // longitudinal ribs: dim structural layer only
                               // now -- the silhouette comes from the rim term.
                               // 11 -> 19 (9 ribs -> 5): the ribs were the
                               // last evenly-spaced longitude set on screen.
   silhouetteWeight: 1.24,
-  rimWeight: 2.65,            // primary silhouette stroke: rim-lit outline
+  // §04/§05: 2.65 -> 1.55. The old weight made the outline read as a uniform
+  // technical perimeter stroke. Brightness now carries the strongest folds;
+  // width no longer does.
+  rimWeight: 1.55,
 
   // --- Silhouette (see updateSilhouette / LAYER 1) --------------------------
   // The outline is extracted as the zero level set of signed n*v and welded
@@ -61,25 +74,117 @@ const CONFIG = {
   // threshold on |n*v| is what produced first a meridian cage and then
   // combing across view-tangent folds.
   silhouetteBase: 255,        // peak alpha of the outline stroke
-  silhouetteStrength: 1.0,    // master multiplier on silhouette brightness
+  // §32-09 REDUCE PERIMETER DOMINANCE, 10-20%. 1.0 -> 0.84 is a 16% cut, mid
+  // band, applied as the MASTER multiplier so it scales the whole outline
+  // uniformly -- the selective structure (which edges glow, which fade) is set
+  // by silhouetteFloor and the edge gains below and is deliberately untouched,
+  // so this dims the perimeter without flattening its variation.
+  // §32-09's other half -- "redistribute energy inward" -- is the interior
+  // field, the +25% membrane midtone and the 1.39x ribbons. This cut is what
+  // pays for part of them in the brightness budget.
+  // §32-09 asks for a 10-20% perimeter cut and §32-18 wants the selective
+  // silhouette at 50-70% of white. Those two cannot both be read literally:
+  // 0.84 is a 16% cut but still peaks at 104%, i.e. it CLIPS. The old 1.0
+  // value peaked at 124%, so it was clipped too -- and clipped pixels all
+  // render the same flat white, which means the perceived reduction from a
+  // nominal "40% cut" is far smaller than 40%. 0.62 is the value that lands
+  // the peak inside §32-18's band (77%) while genuinely darkening the rim,
+  // which is what the "too much perimeter brightness" note is about.
+  silhouetteStrength: 0.62,   // master multiplier on silhouette brightness
   silhouetteMinRun: 4,        // drop chains shorter than this many vertices
+
+  // --- §04/§05 SELECTIVE EDGE LIGHT ----------------------------------------
+  // The old outline alpha was `base * (0.70 + 0.30 * focal)`. That 0.70 FLOOR
+  // is precisely the uniform white perimeter the brief rules out: every
+  // silhouette vertex, anywhere on the form, got at least 70% brightness. The
+  // floor is now `silhouetteFloor` and the remainder is earned from a product
+  // of Fresnel, curvature and focal proximity -- so some edges glow, some
+  // fade, and some genuinely disappear.
+  // §32-10 SELECTIVE EDGE LIGHT. 0.10 -> 0.07: the dormant stretches of
+  // outline drop further toward invisible while the earned term is untouched,
+  // so the gap between an activated edge (neck, upper-right fold, one
+  // lower-left contour, one return curve) and a dormant one WIDENS even as the
+  // perimeter as a whole dims by 16%. Lowering the floor is how you dim an
+  // outline without dimming the parts that carry structure.
+  silhouetteFloor: 0.07,      // the dimmest an outline vertex may go
+  edgePower: 1.9,             // exponent on the Fresnel-like grazing term
+  // §16 raised (0.85 -> 1.15, 1.05 -> 1.45). The FLOOR above is deliberately
+  // left at 0.10: raising these gains widens the gap between an activated edge
+  // and a dormant one instead of lifting the whole perimeter, which is what
+  // "increase silhouette brightness ONLY where it supports form" asks for.
+  // Both terms saturate via clamp(selective, 0, 1), so the strong zones reach
+  // full brightness sooner and the quiet ones stay near the floor.
+  edgeCurvatureGain: 1.15,    // how much local curvature promotes an edge
+  edgeFocalGain: 1.45,        // how much focal proximity promotes an edge
 
   // --- Facing attenuation (§04) --------------------------------------------
   // Signed n·v, distinct from the unsigned rim magnitude. Back-facing geometry
   // is dimmed hard but never removed -- it still has to communicate volume.
   backFacingFloor: 0.28,      // rear structure stays legible, never equal
-  facingPower: 1.08,
+  facingPower: 0.70,   // §11 front 100% / side 72% / back 28%. Solved, not
+                      // guessed: f=0 and f=1 are fixed points of the power, so
+                      // this shapes ONLY the midrange -- it moves the grazing
+                      // band into the 70-100% target without touching either
+                      // endpoint. At the old 1.08 the side read 62%, under spec.
+                      // Matters more now that nothing writes depth and facing
+                      // alpha is the sole front/back separator.
 
   // --- Hero contours (§03) --------------------------------------------------
   // Marching-squares output is chained into continuous polylines; the longest
   // chains carrying the most curvature are promoted to heroes.
-  heroContourCount: 7,
-  minChainLength: 7,          // remove short islands; retain long fold bridges
-  secondaryLineOpacity: 0.76, // restored structure without returning the mesh
-  closedLoopOpacity: 0.06,    // closed islands recede well below flowing bands
+  // §04/§06: 7 -> 5. Seven full-weight contours plus five ribbons was too many
+  // equally-strong lines for the eye to rank, which is the "several bright
+  // contour islands competing" failure. Five keeps the strata read while the
+  // ribbons stay unambiguously dominant.
+  heroContourCount: 5,
+  // §15 MEDICAL-CONTOUR REMOVAL. Iso-contours of a scalar field produce closed
+  // islands STRUCTURALLY -- no alpha tuning removes them, because at any level
+  // there are always small local extrema ringed by a short closed loop. That is
+  // the MRI/CT-slice read. Two changes kill it at the source:
+  //   - closed chains are now SKIPPED entirely (closedLoopOpacity 0.06 -> 0),
+  //   - minChainLength 7 -> 20, so only bands that genuinely sweep across the
+  //     manifold survive at all.
+  // The curvature field itself is unchanged; only which of its level sets get
+  // drawn changes. Long open bands are what read as strata.
+  minChainLength: 20,
+  // §06 PUSH SECONDARY LINES BACK, -20-40%. 0.52 -> 0.34 is a 35% reduction,
+  // inside the band. These lines still carry fold readability and depth; they
+  // simply stop competing with the hero ribbons for the eye.
+  // §32-07 REMOVE HEAVY DIAGONAL BANDS. 0.34 -> 0.17, a further 50% cut. These
+  // are the thick dark internal strata that read as "structural braces". They
+  // are not deleted (they still carry fold readability and the depth cue that
+  // stops the interior going empty), but they are pushed to roughly half
+  // again, so the three hero ribbons are unambiguously the only strong
+  // internal lines. §32-07 forbids replacing them with another band system, so
+  // nothing takes their place -- the energy goes to the interior FIELD instead.
+  secondaryLineOpacity: 0.17,
+  closedLoopOpacity: 0.0,     // closed islands are not drawn at all
 
-  // --- Translucent surface (§06) -------------------------------------------
-  surfaceOpacity: 42,        // readable membrane mass, still translucent
+  // --- Translucent membrane (§01/§02) --------------------------------------
+  // 42 -> 11. The single opaque-ish shell was the "dark plastic plate" read.
+  // Mass now comes from SEVERAL faint strata (see MEMBRANE), not one heavy one,
+  // so the front surface is see-through and interior structure stays legible.
+  // Value solved against §27, not guessed: compositing the four layers src-over
+  // gives peak luminance 17.0% and typical 6.6%, inside the brief's 5-18%
+  // membrane band. At 15 the stack peaked at 22%, i.e. an opaque plate again.
+  // §32-01/§32-18/§32-21. 11 -> 14.
+  //
+  // The previous pass set this to 11 and deliberately routed the midtone lift
+  // through the membrane's CONSTANT term instead, on the reasoning that the
+  // master opacity also scales the crests and would raise pure highlights.
+  // That reasoning was correct then and is revisited here for one reason: it
+  // makes this value the hard ceiling on the whole stack, and §32-18's target
+  // for the main membrane (22-35%) is NOT reachable underneath it. Solved:
+  // at 11 the equilibrium membrane composites to 17.8%, below the band, and
+  // sweeping the constant from 0.50 to 0.64 only moves it to 19.0% -- the
+  // constant is a weak lever because the opacity multiplies it.
+  //
+  // At 14: equilibrium 22.3% (in band) and peak 41.3%. The highlight concern
+  // that motivated 11 is handled at the two places it actually bites instead:
+  // the membrane g.core coefficient is cut 1.15 -> 1.00 and interiorField() is
+  // normalised to 0..1 with a soft knee, so the crest terms do NOT scale up
+  // with this value the way they would have. Membrane stays translucent.
+  surfaceOpacity: 14,
   surfaceInset: 0.994,        // depth bias so contours don't z-fight the shell
 
   // Only response above this reaches full brightness, so broad lobes stay
@@ -94,9 +199,262 @@ const CONFIG = {
   // Bounding-box fit (see measureExtents): true min/max box, not distance
   // from the origin, so the off-centre asymmetric form doesn't inflate its
   // own framing fit toward the empty side.
-  framingFill: 0.86,          // slightly looser than before, for breathing
-                              // room now that the form is wider and offset.
+  // 0.86 -> 0.90. This is NOT a compositional preference, it is compensation:
+  // the wider bloom (ANIM.bloomStrength) grows the loop's max width from 732 to
+  // 768px, and since solveLoopFraming() freezes the fit over the WHOLE loop, a
+  // wider loop max would push distForLateral past the cameraDistance floor and
+  // dolly the camera back -- shrinking the sculpture in every frame to pay for
+  // an opening visible in twenty. Measured: at fill 0.90 the new distForLateral
+  // widens the loop's max width from 732px to 789px. distForLateral is then
+  // 1489 at fill 0.93, still under the cameraDistance floor of 1500, so fitZ
+  // stays pinned at 1500 exactly as before and the bloom growth is seen as the
+  // form OPENING rather than as the camera dollying back. At the old 0.86 the
+  // same geometry gives 1611 and the sculpture would shrink ~7% in every one
+  // of the 600 frames to pay for an opening visible in twenty.
+  framingFill: 0.93,
   fogDepthRange: 920,
+};
+
+// --- §02 LAYERED MEMBRANE SYSTEM ---------------------------------------------
+// Four strata generated from the SAME manifold, never from duplicate objects.
+// Each layer differs in three ways only:
+//
+//   offset -- displacement along the vertex NORMAL, in world units. Kept to a
+//             few px so the silhouette family, the lobes and the composition
+//             (§23) are untouched; this is stratification, not inflation.
+//   lag    -- how many frames back in the history ring this layer reads its
+//             positions from (§16/§17 ELASTIC MEMORY). Layer 0 is live. The
+//             lag is small enough that it never reads as a second animation,
+//             only as the outer films trailing the core through the pinch and
+//             catching up through the bloom release.
+//   alpha  -- scale on CONFIG.surfaceOpacity, giving the §-MEMBRANE-VISIBILITY
+//             hierarchy. With surfaceOpacity 15 the effective per-layer alphas
+//             land at roughly 15 / 9 / 5.4 / 3 of 255, i.e. 6% / 3.5% / 2% /
+//             1.2% -- inside the brief's bands once the facing/glow gain terms
+//             (which reach ~2.4x) are applied on top.
+//
+// Layer 0 is the only one that writes depth. Layers 1..3 test depth but do not
+// write it, so they cannot occlude each other into a single opaque plate --
+// which is exactly how a "layered" system collapses back into a solid shell.
+// §32-15 MEMBRANE DEPTH. Four layers retained. Their separation is improved on
+// the three axes the brief names, so they read as distinct strata rather than
+// as one shape drawn four times:
+//   opacity -- the alpha ladder is steepened at the top (1.00/0.66/0.40/0.22):
+//              the second film comes up so mid-depth volume is readable, the
+//              outermost stays low so it never doubles the silhouette.
+//   tone    -- the ramp is widened (0.50->0.80 rather than 0.50->0.74) so the
+//              outer films sit measurably cooler/lighter than the core.
+//   depth   -- lag is respread (0/4/9/15) so the outer films trail further
+//              through the pinch and catch up visibly on the bloom release.
+//   light   -- `glowBias`: outer films take MORE of the interior field than
+//              the core does. That is what makes the light look like it is
+//              INSIDE the stack, illuminating the films from within, instead
+//              of sitting on the front surface.
+const MEMBRANE = {
+  layers: [
+    { offset: 0.0, lag: 0, alpha: 1.00, tone: 0.50, glowBias: 0.85 },  // core
+    { offset: 5.5, lag: 4, alpha: 0.66, tone: 0.60, glowBias: 1.05 },
+    { offset: 11.0, lag: 9, alpha: 0.40, tone: 0.70, glowBias: 1.25 },
+    { offset: 17.5, lag: 15, alpha: 0.22, tone: 0.80, glowBias: 1.45 }, // outermost
+  ],
+  // §17: during the BLOOM release the strata visibly SEPARATE, then settle.
+  // The offset above is multiplied by this, so the layers breathe apart on the
+  // release and draw back together at equilibrium.
+  separationGain: 0.85,
+  // §11 FRONT/BACK SEPARATION applied per-layer: outer films are dimmed harder
+  // on back-facing geometry than the core is, so the rear reads as depth
+  // rather than as a second silhouette.
+  // §32-16 FRONT/SIDE/REAR = 100% / 60-80% / 20-30%. The existing facingPower
+  // 0.70 and backFacingFloor 0.28 already put the CORE layer at 100/72/28,
+  // inside spec, so neither is touched. backBias is what the outer films add
+  // on top; 0.55 -> 0.62 lifts the rear films slightly so the back structure
+  // "helps explain volume" rather than disappearing, while the core layer
+  // (which bypasses backBias entirely) keeps the front/back separation crisp.
+  backBias: 0.62,
+};
+
+// --- §03 CURVATURE RIBBONS ---------------------------------------------------
+// Five long bands that WRAP the manifold. Deliberately NOT iso-contours: an
+// iso-contour is a level set, so it closes on itself and cannot be made to
+// sweep. These are parametric paths across the (u,v) grid -- each one walks the
+// FULL u range exactly once (an integer number of wraps, so it closes at the
+// seam with no abrupt start or stop) while drifting in v. That produces the
+// long diagonal strata / field-trace read the brief asks for.
+//
+// They are drawn as TRIANGLE_STRIP BANDS, not strokes. This is the load-bearing
+// choice: a stroked path is just another contour line and gives §14's hierarchy
+// and the "compress at the neck, widen over the lobes" behaviour nothing to act
+// on. A band has WIDTH, and width is what carries curvature response.
+// vOffset: where the band sits in v at u=0 (0..1 across the pole-skipped span)
+// vSwing: how far it migrates in v over one full u wrap
+// wraps:  integer u revolutions -- MUST be an integer or the band tears
+// tier:   §14 light hierarchy. 1 = primary, 0.5 = secondary, 0.22 = tertiary
+//
+// §05 "3-5 HERO RIBBONS". There are already exactly 5 bands, so none are
+// deleted -- removing two would open bare stretches of membrane with no long
+// structural line crossing them, losing the surface coverage that makes the
+// form readable. What changes is the TIER SPREAD: the top three are promoted
+// to carry the piece (1.00 / 0.88 / 0.74) and the bottom two are pushed down
+// hard (0.34 -> 0.18, 0.28 -> 0.15) so they read as supporting structure
+// rather than as five comparable lines. `hero` marks which get the §15 halo.
+// §32-05 THREE HERO RIBBONS + ONE VERY SUBTLE SECONDARY. The five-band set is
+// cut to four: the three heroes are promoted to near-parity (1.00 / 0.94 /
+// 0.86 -- they are meant to read as a family of three, not as a 1st/2nd/3rd),
+// and of the two tertiaries one is DELETED outright and the other held at 0.10
+// as the "optionally 1 very subtle secondary" the brief allows.
+//
+// §32-06 asks for 1.3-1.6x visibility with NO extra thickness, and explicitly
+// "slightly thinner". Width therefore DROPS (15.0/12.5/10.0 -> 11.5/10.0/8.5)
+// while the alpha rises in RIBBON_CFG.baseAlpha -- brighter and thinner is a
+// higher-contrast, more elegant line than brighter and fatter, and a thinner
+// band also survives phone-size downscale better because it stays a line
+// rather than blurring into a strip.
+//
+// vOffset/vSwing are chosen so all three heroes pass through or near the
+// central curvature focus (§32-05): the neck sits around v~0.45-0.55, and each
+// band's [vOffset, vOffset+vSwing] interval now straddles that span.
+const RIBBONS = [
+  { vOffset: 0.30, vSwing: 0.46, wraps: 1, width: 11.5, tier: 1.00, drift: 1, hero: true },
+  { vOffset: 0.66, vSwing: -0.34, wraps: 1, width: 10.0, tier: 0.94, drift: -1, hero: true },
+  { vOffset: 0.42, vSwing: 0.30, wraps: 1, width: 8.5, tier: 0.86, drift: 1, hero: true },
+  { vOffset: 0.16, vSwing: 0.34, wraps: 1, width: 4.5, tier: 0.10, drift: -1, hero: false },
+];
+
+const RIBBON_CFG = {
+  samples: 168,          // samples along u; well above US so the band is smooth
+  lift: 2.2,             // world units off the surface, so it never z-fights
+  // §03 "compress near the neck, widen across broad lobes": the half-width is
+  // scaled DOWN where curvature response is high. A ribbon narrowing as it
+  // crosses the neck is the whole reason these are bands.
+  compression: 0.62,     // fraction of width removed at maximum curvature
+  // §14: at any moment only 1-2 ribbons should command attention. The primary
+  // is chosen by which band the focal point is actually nearest, so the lead
+  // ribbon CHANGES over the loop rather than being fixed.
+  // §27 BRIGHTNESS DISCIPLINE, solved rather than guessed. The alpha term below
+  // reaches 2.50 at maximum, so at baseAlpha 74 the lead ribbon peaked at 138%
+  // of white -- a blown-out band. Solving for the brief's 50-80% target:
+  //     baseAlpha = target * 255 / (tier * leadBoost * 2.50)
+  //
+  // Set to 36 (primary 56%, secondary 29%, tertiary 25%) rather than the 46 that
+  // a ribbons-only solve gives. Once the ribbons and membrane crests started
+  // FEEDING the bloom, the ribbon peak and the bloom tint stopped being
+  // independent: at 46 the climax composited to 116% and clipped. See
+  // compositeBloom() for the joint solve -- this value and the tint there are
+  // one decision, and neither can be tuned without re-checking the other.
+  // 36 -> 28. Re-solved because GLOW.haloGain rose to 0.70: the ribbon alpha
+  // term contains 0.34*g.halo and the bloom emitters read the same field, so
+  // holding 36 pushed the composited climax to 122% of white. See GLOW.
+  // §32-06 HERO RIBBON BRIGHTNESS, 1.3-1.6x. 28 -> 39 is 1.39x, mid-band.
+  //
+  // This is the single largest addition in the pass and it is spent on the
+  // element §32's FINAL PRIORITY ranks third. It is affordable ONLY because it
+  // is paid for in the same breath: the ribbon's own g.core coefficient drops
+  // 0.90 -> 0.62 in drawCurvatureRibbons(), and the composite tint drops
+  // 40 -> 30. Both cuts land on the focal core at the climax, which is where
+  // the 99.3% ceiling binds; the 1.39x gain lands on the ribbon BODY term
+  // (0.85 + 0.44*resp), which is a midtone across the whole loop.
+  //
+  // Net at the climax core: the ribbon peak is roughly flat (39*0.62 vs
+  // 28*0.90 on the core term) while the ribbon's broad length gets 39% more
+  // light everywhere the core is not -- which is exactly §32-17's "the missing
+  // information is in the midrange", applied to the ribbons.
+  leadBoost: 1.5,
+  baseAlpha: 38,
+  // §15 HALO. Width multiplier and alpha scale for the hero underlay pass.
+  // haloAlpha is kept very low ON PURPOSE: the halo covers ~2.6x the area of
+  // the core band, so equal alpha would add far more total light than the
+  // ribbon itself and re-inflate the climax the brightness budget already
+  // solves for. At 0.16 the halo peaks around 9% of white -- a glow the eye
+  // reads as depth, not as a second ribbon.
+  haloWidth: 2.9,
+  haloAlpha: 0.20,
+  // Ribbons drift slowly along their own path. `drift` in RIBBONS is an
+  // INTEGER harmonic multiplier -- any non-integer here snaps the Reel.
+  driftRate: 1,
+};
+
+// --- §08 LEFT-LOWER LOBE REBALANCE -------------------------------------------
+// "Feels visually heavy. Do NOT remove it. Make it lighter and more suspended."
+//
+// Seven of the brief's eight remedies for this are RENDERING properties (dark
+// mass, internal midtone, silhouette brightness, membrane transparency, light
+// separation) and only one is geometric. So this is implemented as a spatial
+// modulation of the existing shading terms rather than as surgery on the
+// manifold -- which also honours "do not simply shrink the lobe".
+//
+// The site is given in unit-sphere space and is deliberately its OWN config
+// value rather than a reference to a DEFORMERS entry: the screen-left-lower
+// mass is EMERGENT from the overlap of several deformers (lowerMass actually
+// sits at x=+0.28, i.e. screen RIGHT with the eye on +Z), so there is no single
+// named lobe to point at. If this lands on the wrong mass, negate site[0] --
+// that is the only edit needed, and it is why the site lives in one place.
+const LOBE_BALANCE = {
+  site: [-0.52, -0.50, 0.10],  // screen left-lower, unit-sphere space
+  width: 0.62,
+  massCut: 0.30,   // how much dark membrane mass is removed at the centre
+  midLift: 0.34,   // internal midtone added back, so it lightens not vanishes
+  silCut: 0.42,    // silhouette brightness reduction -> a softer outline
+};
+
+// 0..1 weight, 1 everywhere except inside the left-lower lobe. Shared by the
+// membrane and the silhouette so the lobe lightens as ONE coherent region
+// rather than as two independently-tuned effects.
+function lobeWeight(x, y, z) {
+  const R = CONFIG.baseRadius;
+  return siteFalloff(x / R, y / R, z / R, LOBE_BALANCE.site, LOBE_BALANCE.width);
+}
+
+// §08: reduces dark surface mass while lifting internal midtone, so the lobe
+// reads as a more transparent, suspended membrane instead of a heavy plate.
+function lobeMidtone(x, y, z) {
+  const w = lobeWeight(x, y, z);
+  return 1 - LOBE_BALANCE.massCut * w + LOBE_BALANCE.midLift * w * 0.5;
+}
+
+// --- §06/§07 INTERNAL LUMINOSITY ---------------------------------------------
+// The glow is TWO radii, not one. Measured against this composition: the
+// sculpture is ~700px wide on a 1080px frame, and focalWidth 0.58 (in
+// baseRadius units) puts the >50% region at ~46% of the sculpture width -- a
+// wash, not a bloom. §07 asks for a visible core of 8-18%.
+//
+//   core -- 0.20 => ~16% of sculpture width. This is THE curvature bloom.
+//   halo -- reuses ANIM.focalWidth (0.58) at low amplitude, supplying the
+//           "weaker surrounding illumination" and the soft spatial falloff.
+//
+// Both are Gaussians centred on the same travelling focalPoint, so the core
+// and its halo can never separate.
+// §02/§03 BROADEN THE FIELD, NOT THE CORE. The brief asks for a 1.5-2x wider
+// bloom whose WHITE area does not grow equally: "SMALL CORE + LARGE LIGHT
+// FIELD". Those two clauses select the knob between them.
+//
+// haloWidth is deliberately NOT raised. At 0.58 the halo already covers ~46%
+// of the sculpture width; widening it further produces a flat wash over most
+// of the form, which is the failure §02 explicitly warns against and which the
+// two-radius system was built to escape in the first place.
+//
+// What changes is haloGain, 0.42 -> 0.70 (1.67x, inside the 1.5-2x target).
+// That raises the AMPLITUDE of the existing broad falloff, so the soft field
+// reads much further out while coreWidth 0.20 (~16% of width, inside §01's
+// 10-20%) keeps the bright centre exactly as compact as it was.
+//
+// WARNING -- haloGain is NOT a local knob. internalGlow() feeds the membrane,
+// the ribbons, the contours, the silhouette AND all three bloom emitters, so
+// raising it multiplies through every layer at once. At 0.74 with the old
+// ribbon/tint values the worst-case additive stack at the focal core measured
+// 122% of white, i.e. a clipped flat disc -- exactly the failure §02 and §07
+// describe. It is re-solved jointly with RIBBON_CFG.baseAlpha and the
+// compositeBloom() tint below; the three are ONE decision. Measured total at
+// the climax is now 99.3%.
+const GLOW = {
+  coreWidth: 0.20,
+  haloWidth: 0.58,
+  coreGain: 1.00,
+  haloGain: 0.70,
+  // §06: the light must read as generated BY curvature, inside the membrane --
+  // not as an external lamp. Local curvature response therefore multiplies the
+  // glow, so unlit-but-nearby smooth regions stay dark while a high-curvature
+  // fold at the same distance lights up.
+  curvatureCoupling: 0.75,
 };
 
 // --- Temporal choreography --------------------------------------------------
@@ -118,7 +476,12 @@ const ANIM = {
   // EVENT 03 NECK PINCH -- longest hold; peaks 0.35-0.45 == the 4.0-4.5s climax.
   pinch:       { start: 0.25,  end: 0.54, attack: 0.40, release: 0.34, strength: 1.0 },
   // EVENT 04 BLOOM -- release into a broad asymmetric unfold, not a reversal.
-  bloom:       { start: 0.44,  end: 0.76, attack: 0.30, release: 0.46, strength: 1.0 },
+  // §11/§19 RELEASE SPEED. attack 0.30 of a 0.32 window = 0.96s, at the very
+  // slow end of §19's 0.5-1.0s and the reason the opening read as a linear
+  // interpolation rather than a release. 0.19 -> 0.61s, mid-band: the lobe
+  // snaps out, then shapedEvent()'s overshoot ring (ANIM.overshoot 0.09, i.e.
+  // a 1.09 peak, already inside §12's 1.06-1.12) carries the settle.
+  bloom:       { start: 0.44,  end: 0.76, attack: 0.19, release: 0.46, strength: 1.0 },
   // EVENT 05 CURVATURE WAVE -- travelling front, see waveFront().
   wave:        { start: 0.65,  end: 0.92, attack: 0.26, release: 0.50, strength: 1.0 },
   // EVENT 06 RECONNECTION -- wraps the seam; returns by a different route.
@@ -129,8 +492,16 @@ const ANIM = {
   twistStrength: 0.62,         // extra radians through the neck at full torsion
   pinchStrength: 0.52,         // additional fractional neck pinch at climax
   pinchWidth: 0.62,            // band tightness multiplier during the pinch
-  bloomStrength: 0.36,         // unfold amplitude
-  bloomSplay: 0.24,            // lateral splay of the released region
+  // §09/§10 BLOOM SILHOUETTE OPENING. Solved numerically, not guessed: the
+  // projected bounding-box width at the pinch minimum (t=0.45) vs the bloom
+  // maximum (t=0.71) measured 641 -> 733 px, a 14.4% change -- just under the
+  // brief's 15-30% band, which is why BLOOM read as "too similar to neighbouring
+  // phases". At 0.56/0.38 the same measurement gives 641 -> 769, i.e. 20.0%,
+  // mid-band. Pushed further (0.68/0.46 -> 24%) the loop's max width forces the
+  // framing fit past the cameraDistance floor and the whole piece shrinks for
+  // all 600 frames, which costs more than the extra opening buys.
+  bloomStrength: 0.56,         // unfold amplitude
+  bloomSplay: 0.38,            // lateral splay of the released region
 
   curvatureWaveSpeed: 1.15,    // front travel, in surface-coord units per window
   curvatureWaveWidth: 0.30,    // gaussian sigma of the front
@@ -138,7 +509,10 @@ const ANIM = {
 
   propagationDelay: 0.085,     // loop fractions of lag per unit surface distance
   curvatureSpeedGain: 1.0,     // how much harder high-curvature regions flow
-  peakHold: 0.05,              // extra dwell at the climax (see peakDwell())
+  // §19 PINCH CLIMAX. 0.05 of a 10s loop = 0.5s, well past the brief's
+  // 0.15-0.35s emphasis window. 0.026 = 0.26s, mid-band: long enough to
+  // register the neck, short enough that the motion never reads as frozen.
+  peakHold: 0.026,
 
   cameraDrift: 1.0,            // scales the existing drift; motion stays secondary
 
@@ -167,7 +541,13 @@ const ANIM = {
 
   cameraPushStrength: 0.034,   // restrained push, kept within the 2–4% range
   compositionDrift: 26,        // §24: px the framed centre may wander
-  equilibriumResidual: 0.050,  // local settling, ~10% of main motion
+  // §32-11: 0.050 -> 0.062. The geometry stays calm (this is still ~12% of the
+  // main deformation amplitude) but the local settling is now visible rather
+  // than merely present -- part of the "calm but not stopped" fix.
+  equilibriumResidual: 0.062,  // local settling, ~12% of main motion
+  // §32-12 RESIDUAL CURVATURE WAVE amplitude. 11.5% of curvatureWaveStrength
+  // (0.26), inside the brief's 8-15%. See applyEquilibriumResidual().
+  residualWave: 0.030,
 };
 
 // Event centres in unit-sphere space. Each event acts on a DIFFERENT region, so
@@ -658,7 +1038,11 @@ function applyBloomFold(px, py, pz, t) {
   const eRaw = shapedEvent(lp, ANIM.bloom);
   if (Math.abs(eRaw) < 1e-4) return;
   const e = eRaw > 0 ? Math.pow(eRaw, 0.62) : eRaw;
-  const w = siteFalloff(px, py, pz, site, 0.78);
+  // §09/§10: 0.78 -> 0.88. Widening the falloff recruits MORE of the upper-right
+  // lobe into the release, so the silhouette opens as a broad region rather
+  // than a local bulge. This is what turns the extra bloomStrength into a
+  // readable change of outline instead of a deeper dent in the same place.
+  const w = siteFalloff(px, py, pz, site, 0.88);
   const open = ANIM.bloomStrength * e * w;
   const dx = px - site[0], dy = py - site[1], dz = pz - site[2];
   const m = vlen(dx, dy, dz);
@@ -738,6 +1122,35 @@ function applyEquilibriumResidual(px, py, pz, t) {
   _acc.x += (px / radial) * amp * (a * settleA + b * settleB);
   _acc.y += (py / radial) * amp * (a * settleA - b * settleB * 0.55);
   _acc.z += (pz / radial) * amp * (a * settleA + b * settleB * 0.70);
+
+  // §32-12 RESIDUAL CURVATURE WAVE. A weak travelling front that runs
+  // lower-left -> central neck -> upper-right during equilibrium, at 8-15% of
+  // the main flow. ANIM.curvatureWaveStrength is 0.26, so residualWave 0.030
+  // is 11.5% of it -- mid-band.
+  //
+  // The front position is a plain fraction of loop phase (integer harmonic,
+  // one traversal per loop), and the whole term is gated by `active`, which is
+  // already zero at both ends of the equilibrium window. So this adds motion
+  // during the calm stage and contributes exactly nothing at the seam --
+  // §32-22's seamless loop is preserved by construction, not by tuning.
+  const wa = EVENT_SITES.waveStart, wb = EVENT_SITES.waveEnd;
+  let ex = wb[0] - wa[0], ey = wb[1] - wa[1], ez = wb[2] - wa[2];
+  const eLen2 = ex * ex + ey * ey + ez * ez;
+  // Project the sample onto the lower-left -> upper-right axis.
+  const s = ((px - wa[0]) * ex + (py - wa[1]) * ey + (pz - wa[2]) * ez) / eLen2;
+  // Front sweeps 0..1 across the equilibrium window, then wraps.
+  const frontPos = (t - 0.50) / 0.235;
+  const d = s - frontPos;
+  const w = 0.26;
+  const front = Math.exp(-(d * d) / (2 * w * w));
+  const resAmp = ANIM.residualWave * active * front;
+  // Displacement is along the surface normal direction (radial on the base
+  // sphere), so the wave reads as a swell passing THROUGH the membrane rather
+  // than as a lateral slide of the whole form.
+  const swell = Math.sin(TAU * (s * 2 - t * 2));
+  _acc.x += (px / radial) * resAmp * swell;
+  _acc.y += (py / radial) * resAmp * swell;
+  _acc.z += (pz / radial) * resAmp * swell;
 }
 
 function deformedPoint(nx, ny, nz, p, out, o) {
@@ -1178,14 +1591,37 @@ function evaluateEvents(t) {
 // decelerates into the next -- rather than sliding at constant speed. The neck
 // leg is additionally slowed by the peakness term, so the highlight is
 // visibly ATTRACTED to the curvature concentration and lingers there.
+// §04/§18/§19 THE NECK DWELL. This was the single largest cause of "the main
+// curvature focal region is still too weak".
+//
+// peakness reaches a full 1.0 across t=0.38-0.42 (measured), i.e. the neck is
+// at its tightest and its curvature maximum for those frames. But the old route
+// ran NECK.a at key 0.28 straight to bloomSite at 0.52, so at t=0.40 the focal
+// point sat at smoother01(0.5) between them -- roughly 0.32 unit-radii off the
+// neck. Against GLOW.coreWidth 0.20 that is exp(-0.32^2/0.08) = 0.28, so the
+// bright CORE was at 28% strength over the neck at the exact climax, and §18's
+// "the neck must be the strongest structural transition" was resting on a thin
+// silhouette line instead of on the light.
+//
+// The fix is a DWELL, not a speed change: an extra key holds the focus inside
+// the neck (drifting a.->b. along the throat, so it is not frozen) across the
+// whole peakness plateau, and only then departs for the bloom lobe. The leg
+// lookup is generic in n, so this only requires both arrays to stay the same
+// length with ascending keys.
+const NECK_MID = [
+  (NECK.a[0] + NECK.b[0]) * 0.5,
+  (NECK.a[1] + NECK.b[1]) * 0.5,
+  (NECK.a[2] + NECK.b[2]) * 0.5,
+];
 const FOCAL_ROUTE = [
   EVENT_SITES.compress,    // 0.00 -- opening contraction
-  NECK.a,                  // 0.28 -- into the primary neck
-  EVENT_SITES.bloomSite,   // 0.52 -- released lobe
-  EVENT_SITES.waveEnd,     // 0.74 -- carried out along the wave
-  EVENT_SITES.waveStart,   // 0.88 -- returns by a DIFFERENT route (§31)
+  NECK.a,                  // 0.26 -- into the primary neck
+  NECK_MID,                // 0.44 -- DWELLS through the pinch climax (§18/§19)
+  EVENT_SITES.bloomSite,   // 0.60 -- released lobe
+  EVENT_SITES.waveEnd,     // 0.78 -- carried out along the wave
+  EVENT_SITES.waveStart,   // 0.90 -- returns by a DIFFERENT route (§31)
 ];
-const FOCAL_KEYS = [0.0, 0.28, 0.52, 0.74, 0.88];
+const FOCAL_KEYS = [0.0, 0.26, 0.44, 0.60, 0.78, 0.90];
 
 function updateFocalPoint(t) {
   const n = FOCAL_ROUTE.length;
@@ -1209,7 +1645,28 @@ function updateFocalPoint(t) {
   focalPoint.z = (a[2] + (b[2] - a[2]) * eased) * R;
   // Strength: always present, but strongest at the climax and while the wave
   // is crossing. Never zero -- §29 requires a moving focus from frame one.
-  focalPoint.strength = clamp(0.42 + 0.5 * peakness + 0.34 * EV.wave +
+  // §20 EQUILIBRIUM MUST STAY ALIVE. The geometry already keeps drifting
+  // (applyEquilibriumResidual), but a constant-strength light over a settling
+  // form still reads as dead. A slow low-amplitude breath on the light keeps
+  // the balanced stage in motion without reintroducing a global pulse -- and
+  // the harmonic is INTEGER, so it returns exactly to itself at the seam.
+  // §32-13/§32-21. Two changes, both about the EQUILIBRIUM stage:
+  //
+  //  - The floor rises 0.42 -> 0.52. §32-21 sets a target of 40-60% internal
+  //    light field during equilibrium and forbids dimming the piece just
+  //    because the motion is calm ("Calm != dark"). The floor is what the
+  //    light decays to once peakness, wave and bloom have all released, i.e.
+  //    it IS the equilibrium brightness, so this is the knob that instruction
+  //    names. The climax is unaffected: it is set by the peakness term, and
+  //    that term is unchanged.
+  //  - The breathing amplitude rises 0.055 -> 0.085 and gains a second, slower
+  //    integer harmonic. Two coprime harmonics (2 and 1) give a compound
+  //    rhythm that does not repeat within the loop, so the light never settles
+  //    into an obvious pulse -- it reads as circulation. Both are integer, so
+  //    the seam is exact.
+  const alive = 0.085 * Math.sin(TAU * 2 * t + 0.7) +
+                0.045 * Math.sin(TAU * t + 2.3);
+  focalPoint.strength = clamp(0.52 + alive + 0.5 * peakness + 0.34 * EV.wave +
     0.22 * EV.bloom, 0, 1.25);
 
   // §24 COMPOSITION DRIFT: the framed centre leans gently toward the active
@@ -1226,6 +1683,23 @@ function updateFocalPoint(t) {
 // through the second half of the loop.
 // Label boundaries track the EVENT schedule (ANIM) rather than even fifths, so
 // the stage caption changes when the geometry actually changes stage.
+// Label boundaries track the EVENT schedule (ANIM) rather than even fifths, so
+// the stage caption changes when the geometry actually changes stage.
+//
+// NOTE for the user (§28, deliberately NOT acted on -- typography and stage
+// labels are on the preserve list, so this is flagged rather than changed):
+// the measured projected width is narrowest at t=0.45 (w=641, neck at full
+// pinch) and widest at t=0.70 (w=788, lobe fully open). PHASES[2] is titled
+// "03 · BLOOM" but its window (0.27-0.50) covers the TIGHTEST frames, while
+// the widest and most dramatic frames fall under "04 · EQUILIBRIUM". So the
+// most dramatic frame in the loop is not the one captioned BLOOM.
+//
+// PHASES[2]'s own note reads "THE NECKS TIGHTEN · THE LOBES OPEN", which does
+// describe the pinch, so the current mapping is internally coherent and the
+// piece is titled "CURVATURE BLOOM" as a whole. Fixing this is a one-line
+// change here (swap the 0.50 boundary to ~0.46 and 0.72 to ~0.74) or a rewrite
+// of the two label strings -- your call, since it is a wording decision, not a
+// rendering one.
 function currentPhaseInfo() {
   const t = loopProgress;
   if (t < 0.13) return PHASES[0];   // compression
@@ -1242,6 +1716,10 @@ function draw() {
   evolveSurface();
   updateContours();
   updateEchoes();
+  // Spatial hash of the evolved surface. Must run AFTER evolveSurface() and
+  // BEFORE renderFrame(), because the silhouette pass looks up curvature
+  // response at points that carry no vertex index.
+  rebuildResponseGrid();
   measureExtents();
   renderFrame();
   if (isRecording) {
@@ -1252,11 +1730,27 @@ function draw() {
   }
 }
 
+// History ring. Captured every frame now (echoStride 1), because the membrane
+// strata read a per-layer frame lag out of it -- a stride > 1 would make the
+// outer films jump to a new state every stride frames instead of trailing.
 function updateEchoes() {
   const frame = isRecording ? recFrameCount : frameCount - 1;
   if (frame % CONFIG.echoStride !== 0) return;
   echoStates[echoWrite].set(surface.positions);
   echoWrite = (echoWrite + 1) % CONFIG.temporalEchoCount;
+}
+
+// Positions as they were `age` frames ago. age 0 == the live surface, so a
+// membrane layer with lag 0 costs nothing and needs no special case.
+// Clamped to the ring depth: asking further back than the ring holds returns
+// the oldest state rather than silently wrapping to a FUTURE one, which would
+// make the outer film lead the core instead of trailing it.
+function historyPositions(age) {
+  if (age <= 0) return surface.positions;
+  const n = CONFIG.temporalEchoCount;
+  const a = Math.min(age, n - 1);
+  // echoWrite points at the slot to be written NEXT, i.e. the oldest state.
+  return echoStates[((echoWrite - a) % n + n) % n];
 }
 
 // --- Iso-contour extraction --------------------------------------------------
@@ -1549,7 +2043,13 @@ function buildContourChains() {
       focusCoverage += clamp(focalWeight(chainVerts[qo], chainVerts[qo + 1], chainVerts[qo + 2]), 0, 1);
     }
     focusCoverage /= Math.ceil(vertCount / 3);
-    chainScore[chainCount] = vertCount * (0.42 + 1.35 * meanResp + 0.70 * focusCoverage) *
+    // §04 FOCAL HIERARCHY, earned for free. Raising the focusCoverage weight
+    // (0.70 -> 1.15) makes the hero SELECTION itself focus-aware: the five
+    // promoted chains cluster around wherever the focal point currently is,
+    // instead of being scattered across the form by curvature alone. So the
+    // brightest line work and the brightest light land in the same place, which
+    // is what builds one primary region rather than several competing ones.
+    chainScore[chainCount] = vertCount * (0.42 + 1.35 * meanResp + 1.15 * focusCoverage) *
       (closed ? 0.08 : 1);
     chainIsHero[chainCount] = 0;
     chainVertCount += vertCount;
@@ -1883,6 +2383,10 @@ function renderFrame() {
   // cameraEye. (The curvature contours live on the surface and are therefore
   // computed once per frame up in draw(), before the camera exists.)
   updateSilhouette();
+  // §14: resolve the lead ribbon BEFORE the bloom pass. renderBloomSource()
+  // emits from the lead, and drawContourField() brightens it -- computing it in
+  // only one of them would leave the glow trailing a frame behind its source.
+  updateRibbonLead();
   renderBloomSource();
   streakBloom();
 
@@ -1961,6 +2465,195 @@ function focalWeight(x, y, z) {
   return Math.exp(-d2 / (2 * w * w)) * focalPoint.strength;
 }
 
+// §06/§07 BROAD CURVATURE BLOOM -- the two-radius internal light field.
+//
+// focalWeight() above is the WIDE term and is left exactly as it was, because
+// the chain scoring and composition drift are tuned against it. What was
+// missing is a distinct bright CORE: a single Gaussian at focalWidth 0.58
+// covers ~46% of the sculpture width at >50% amplitude, which is a wash. The
+// brief asks for a bloom whose visible region is 8-18% of the width, with a
+// bright core, a soft falloff, and weaker surrounding illumination.
+//
+// So: core (0.20 => ~16% of width) + halo (0.58, low gain) sharing one centre.
+//
+// `resp` is the local curvature response at the sample. §06 requires the light
+// to feel generated by curvature from INSIDE the membrane rather than cast by
+// an external lamp, so a smooth region near the focus stays comparatively dark
+// while a fold at the same distance ignites. Passing resp = 1 gives the pure
+// spatial field for callers that have no curvature to hand.
+const _glow = { core: 0, halo: 0, total: 0 };
+function internalGlow(x, y, z, resp) {
+  const dx = x - focalPoint.x, dy = y - focalPoint.y, dz = z - focalPoint.z;
+  const d2 = (dx * dx + dy * dy + dz * dz) /
+    (CONFIG.baseRadius * CONFIG.baseRadius);
+  const cw = GLOW.coreWidth, hw = GLOW.haloWidth;
+  const core = Math.exp(-d2 / (2 * cw * cw)) * GLOW.coreGain;
+  const halo = Math.exp(-d2 / (2 * hw * hw)) * GLOW.haloGain;
+  // Curvature coupling is applied to the CORE only. The halo has to survive
+  // across smooth membrane too, or the light stops reading as a spatial field
+  // and starts reading as another curvature contour.
+  const k = 1 - GLOW.curvatureCoupling + GLOW.curvatureCoupling * clamp(resp, 0, 1);
+  _glow.core = core * k * focalPoint.strength;
+  _glow.halo = halo * focalPoint.strength;
+  _glow.total = _glow.core + _glow.halo;
+  return _glow;
+}
+
+// §32-02/§32-03/§32-04/§32-13/§32-14 THE BROAD INTERNAL FIELD.
+//
+// This is the one new light term in the pass, and it is deliberately NOT a new
+// visual system (§32 forbids that): it emits nothing of its own, it only
+// returns a 0..1 scalar that the EXISTING membrane / ribbon / contour terms
+// multiply into their existing alphas. Nothing is drawn by it.
+//
+// It answers four instructions with one field, because they are one problem:
+//   §32-02  a broad soft light around the central neck/fold, 12-20% of width,
+//           small brighter centre + wide falloff. Anchored at NECK_MID, which
+//           is the saddle between the two masses -- so the light sits where the
+//           form's principal curvatures change sign and therefore SCULPTS it.
+//   §32-03  the saddle/neck/lobe-connection read comes from `bias`: the field
+//           is multiplied up where the surface normal turns away from the neck
+//           axis, which is exactly the fold and connection geometry.
+//   §32-04  the upper-right lobe's internal gradient -- `lobeGrad` below.
+//   §32-14  asymmetry: +X/+Y (upper-right) is lit ~1.35x, -X/-Y (lower-left)
+//           ~0.78x, so the two sides never balance.
+//
+// §32-13 LIGHT MIGRATION: the centre drifts on INTEGER harmonics of loop
+// phase (2 and 1), so it wanders continuously through equilibrium and still
+// returns exactly to itself at the seam. Amplitude is small (0.10/0.075 of a
+// radius) -- felt as circulation, not seen as a moving lamp.
+const INTERIOR = {
+  width: 0.34,        // wide soft falloff, in baseRadius units
+  coreWidth: 0.155,   // ~12.5% of sculpture width: the brighter centre (§32-02)
+  drift: 0.10,        // how far the field wanders during equilibrium
+  asymGain: 0.35,     // upper-right lit more than lower-left (§32-14)
+  lobeSite: [0.34, 0.52, 0.22],  // upper-right lobe = EVENT_SITES.bloomSite
+  lobeWidth: 0.66,
+};
+function interiorField(x, y, z, resp) {
+  const R = CONFIG.baseRadius;
+  const t = loopProgress;
+  // Slow migration of the field centre. Both harmonics are integers.
+  const cx = (NECK_MID[0] + INTERIOR.drift * Math.sin(TAU * t + 0.4)) * R;
+  const cy = (NECK_MID[1] + INTERIOR.drift * 0.75 * Math.sin(TAU * 2 * t + 1.9)) * R;
+  const cz = (NECK_MID[2] + INTERIOR.drift * 0.6 * Math.cos(TAU * t + 1.1)) * R;
+  const dx = (x - cx) / R, dy = (y - cy) / R, dz = (z - cz) / R;
+  const d2 = dx * dx + dy * dy + dz * dz;
+  const w = INTERIOR.width, cw = INTERIOR.coreWidth;
+  // Small brighter centre + wide soft falloff -- §32-02's two clauses.
+  const broad = Math.exp(-d2 / (2 * w * w));
+  const centre = Math.exp(-d2 / (2 * cw * cw));
+  // §32-21 CALM != DARK. A small constant pedestal under the two Gaussians.
+  // Unlike every other light term in the file this one does NOT scale with
+  // focalPoint.strength, peakness, wave or bloom -- so it is the only light
+  // that is exactly as strong during EQUILIBRIUM as at the climax. That is
+  // precisely what the instruction asks for: the calm stage keeps its
+  // luminance while the motion drops.
+  //
+  // It is bounded and small (0.16) and it sits INSIDE the 1.55 normalisation
+  // below, so it lifts the broad quiet interior toward §32-18's 22-35% main
+  // membrane band without adding anything at the already-saturated core.
+  let f = 0.16 + 0.62 * broad + 0.38 * centre;
+
+  // §32-04 UPPER-RIGHT LOBE INTERNAL GRADIENT. A second broad falloff on the
+  // lobe itself, shaped so the inner (neck-facing) flank is brighter than the
+  // outer shell. `inner` is the component of the sample->lobe-centre direction
+  // along the neck axis: positive on the side that faces the neck.
+  const px = x / R, py = y / R, pz = z / R;
+  const L = INTERIOR.lobeSite;
+  const lx = px - L[0], ly = py - L[1], lz = pz - L[2];
+  const ld2 = lx * lx + ly * ly + lz * lz;
+  const lw = INTERIOR.lobeWidth;
+  const lobeF = Math.exp(-ld2 / (2 * lw * lw));
+  // Direction from lobe centre back toward the neck: the gradient's axis.
+  let ax = NECK_MID[0] - L[0], ay = NECK_MID[1] - L[1], az = NECK_MID[2] - L[2];
+  const al = vlen(ax, ay, az);
+  ax /= al; ay /= al; az /= al;
+  const inner = (lx * ax + ly * ay + lz * az) / lw;
+  // 0.30 rear .. 1.0 inner-neck side. This is the "inner brighter / outer
+  // medium / rear darker" ramp, built from position and the neck axis rather
+  // than from a light direction, so it reads as internal tone not as shading.
+  const lobeGrad = lobeF * (0.30 + 0.70 * smooth01(inner * 0.5 + 0.5));
+  f += 0.55 * lobeGrad;
+
+  // §32-14 ASYMMETRIC ILLUMINATION. Upper-right (+x,+y) brighter, lower-left
+  // darker but never black -- clamped to a floor so §32-16's rear/lower
+  // structure stays readable.
+  const asym = 1 + INTERIOR.asymGain * clamp((px * 0.62 + py * 0.55), -1, 1);
+  f *= Math.max(0.70, asym);
+
+  // §32-03 LIGHT MUST SCULPT. Curvature-coupled, but only partially: a fully
+  // coupled field would collapse back onto the contour lines and stop being a
+  // volumetric light. 0.45 keeps folds and the saddle brighter than smooth
+  // membrane at equal distance, while the field still crosses flat regions.
+  //
+  // NORMALISED TO 0..1 BEFORE RETURN. This is load-bearing, not hygiene: the
+  // raw sum of broad + centre + lobeGrad, scaled by the asymmetry gain, peaks
+  // near 2.1 where the field centre and the upper-right lobe overlap. Every
+  // consumer (membrane, ribbons, contours) multiplies this by its own
+  // coefficient and ADDS the result, so an unbounded field would push the
+  // additive stack far past white exactly where the light is strongest --
+  // producing the clipped flat disc the whole brightness budget exists to
+  // prevent. Bounded here, at the source, so no consumer has to know.
+  //
+  // smooth01 rather than a hard clamp: a hard clamp would create a visible
+  // flat plateau with a hard edge where the field saturates, which is the same
+  // failure in a different guise. The soft knee keeps the falloff a gradient
+  // all the way to the peak.
+  const raw = f * (0.55 + 0.45 * clamp(resp, 0, 1));
+  return smooth01(clamp(raw / 1.55, 0, 1));
+}
+
+// §04 FRESNEL-LIKE EDGE RESPONSE, as ONE factor among several -- never the
+// whole look. Grazing geometry (n perpendicular to the view) returns ~1.
+// Deliberately not a physical Fresnel: no F0, no schlick, no specular lobe,
+// because §13 rules out realistic materials. It is a grazing-angle weight.
+function edgeFactor(signed) {
+  return Math.pow(1 - Math.min(1, Math.abs(signed)), CONFIG.edgePower);
+}
+
+// Curvature response at an arbitrary world point on (or very near) the surface.
+// The silhouette vertices come out of marching the n·v field, so they sit on
+// mesh EDGES and carry no vertex index of their own. A spatial hash of the mesh
+// keeps this O(1) rather than scanning 4608 vertices per silhouette sample.
+//
+// The grid is rebuilt once per frame, after the surface has been evolved.
+const RESP_GRID = 12;                      // cells per axis
+const RESP_CELL = (CONFIG.baseRadius * 2.6) / RESP_GRID;
+const respBuckets = [];
+for (let i = 0; i < RESP_GRID * RESP_GRID * RESP_GRID; i++) respBuckets.push([]);
+
+function respCellIndex(x, y, z) {
+  const h = RESP_GRID * 0.5;
+  const gx = clamp(Math.floor(x / RESP_CELL + h), 0, RESP_GRID - 1);
+  const gy = clamp(Math.floor(y / RESP_CELL + h), 0, RESP_GRID - 1);
+  const gz = clamp(Math.floor(z / RESP_CELL + h), 0, RESP_GRID - 1);
+  return (gx * RESP_GRID + gy) * RESP_GRID + gz;
+}
+
+function rebuildResponseGrid() {
+  for (let i = 0; i < respBuckets.length; i++) respBuckets[i].length = 0;
+  const pos = surface.positions;
+  for (let i = 0; i < pointCount; i++) {
+    const o = i * 3;
+    respBuckets[respCellIndex(pos[o], pos[o + 1], pos[o + 2])].push(i);
+  }
+}
+
+function sampleResponseAt(x, y, z) {
+  const bucket = respBuckets[respCellIndex(x, y, z)];
+  if (bucket.length === 0) return 0;
+  const pos = surface.positions;
+  let best = -1, bestD = Infinity;
+  for (let q = 0; q < bucket.length; q++) {
+    const o = bucket[q] * 3;
+    const dx = pos[o] - x, dy = pos[o + 1] - y, dz = pos[o + 2] - z;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d < bestD) { bestD = d; best = bucket[q]; }
+  }
+  return best < 0 ? 0 : surface.response[best];
+}
+
 // §04 DEPTH-BASED VISIBILITY. Two DIFFERENT quantities come off the same dot
 // product and they must not be conflated:
 //   signed  -- the raw n·v. Its ZERO SET is the silhouette curve; both the
@@ -1996,54 +2689,448 @@ function facingTerms(vx, vy, vz, nx, ny, nz) {
 //   - the shell is inset slightly (surfaceInset) as a depth bias, or the
 //     on-surface contours z-fight against it and shimmer.
 //   - it stays near-black. It is not lighting; it is occlusion and separation.
-function drawTranslucentShell() {
+// §01/§02/§11/§12 THE LAYERED MEMBRANE.
+//
+// Replaces the single dark shell. That shell was the source of every complaint
+// in the brief -- "solid dark mesh", "three large smooth plates", "CAD-like
+// surface" -- because one near-opaque fill over the whole manifold IS a plate,
+// no matter how it is shaded.
+//
+// What is drawn instead: the SAME triangle strips, the same topology, the same
+// vertices, evaluated 4 times at small normal offsets and small frame lags. No
+// new geometry is introduced and the silhouette family is untouched.
+//
+// Two mechanics make this read as strata rather than as four copies:
+//
+//  1. NO layer writes depth. This is the load-bearing change of the whole pass
+//     and it is worth being explicit about why.
+//
+//     Depth writing is BINARY. It does not scale with opacity. The old shell
+//     rendered at surfaceOpacity 42 and wrote depth, which was defensible: it
+//     was dense enough to genuinely be an occluder. This stack renders at 11,
+//     compositing to ~6.6% typical luminance -- and a surface the viewer can
+//     barely see is still a hard wall for everything behind it if it writes
+//     depth. Lowering the alpha would have made the membrane invisible, not
+//     translucent, and §01's requirement ("the viewer should be able to see
+//     some internal structure through the front surface") would be defeated by
+//     construction, along with §11's "do NOT completely hide the back".
+//
+//     So front/back separation is done in ALPHA instead, which is what §11's
+//     100% / 70-100% / 15-30% ratio actually describes. facingTerms(),
+//     backFacingFloor and fogFactor() already compute exactly that and were
+//     dead code for rear geometry while the shell occluded it.
+//
+//     The historical warning against removing the shell's occlusion was written
+//     when the ribs ran at `11 + 30*resp`, closed islands were drawn, and
+//     contour bodies were at full weight -- i.e. when there was enough line
+//     density behind the surface to read as a cage. That density is now gone by
+//     other means (ribs at `5 + 14*resp`, closed chains skipped, minChainLength
+//     20, contour body halved). If the rear still reads too strong, the knob is
+//     CONFIG.backFacingFloor (0.28 -> ~0.20), not depth.
+//
+//  2. Each outer layer reads its positions from `historyPositions(lag)`, so
+//     the films trail the core through the pinch and catch up through the
+//     bloom release (§16/§17 ELASTIC MEMORY). The lag is 3-12 frames = 50-200ms,
+//     below the threshold where it reads as a second animation.
+//
+// Alpha per vertex is a product of: layer tier, facing (front/back, §11), the
+// grazing edge term (§04), local curvature, and the internal glow (§06). That
+// combination is §12's broad soft gradient -- and it is why the fill can be so
+// faint and still describe volume.
+function drawMembraneLayers() {
+  const nrm = surface.normals;
+  const base = CONFIG.surfaceInset;
+  const gl = drawingContext;
+  noStroke();
+
+  // §17/§18: the strata separate on the bloom release and settle back at
+  // equilibrium. Driven by EV.bloom, which is already loop-periodic.
+  const sep = 1 + MEMBRANE.separationGain * EV.bloom;
+
+  for (let L = 0; L < MEMBRANE.layers.length; L++) {
+    const layer = MEMBRANE.layers[L];
+    const pos = historyPositions(layer.lag);
+    const off = layer.offset * sep;
+    const tone = layer.tone;
+    const amp = CONFIG.surfaceOpacity * layer.alpha;
+    const gbias = layer.glowBias;
+    // No layer writes depth -- front/back separation is in alpha. See note 1.
+    gl.depthMask(false);
+
+    for (let i = 0; i < US; i++) {
+      const i2 = (i + 1) % US;   // wrap closes the seam column
+      beginShape(TRIANGLE_STRIP);
+      for (let j = POLE_SKIP; j < VS - POLE_SKIP; j++) {
+        const ia = paramIndex(i, j), ib = paramIndex(i2, j);
+        membraneVertex(pos, nrm, ia, base, off, tone, amp, L, gbias);
+        membraneVertex(pos, nrm, ib, base, off, tone, amp, L, gbias);
+      }
+      endShape();
+    }
+  }
+  gl.depthMask(true);
+  noFill();
+}
+
+// One membrane vertex. Split out of the strip loop so the four-layer pass
+// stays readable; the arithmetic is identical to what the single shell did,
+// plus the normal offset, the edge term and the two-radius glow.
+function membraneVertex(pos, nrm, idx, base, off, tone, amp, layerIndex, gbias) {
+  const o = idx * 3;
+  // Normals are taken from the LIVE surface even when positions come from
+  // history. The lag is a few frames, so the normal is essentially correct,
+  // and recomputing normals per lagged state would cost 4 full passes for a
+  // difference below the alpha quantisation.
+  const nx = nrm[o], ny = nrm[o + 1], nz = nrm[o + 2];
+  const x = pos[o] * base + nx * off;
+  const y = pos[o + 1] * base + ny * off;
+  const z = pos[o + 2] * base + nz * off;
+
+  const ft = facingTerms(x, y, z, nx, ny, nz);
+  // §11: outer films are attenuated harder on back-facing geometry than the
+  // core, so the rear stays readable (never hidden) but never competes.
+  const backW = layerIndex === 0 ? 1 : MEMBRANE.backBias;
+  const facing = 1 - (1 - ft.facing) * backW;
+  const edge = edgeFactor(ft.signed);
+  const resp = surface.response[idx];
+  const g = internalGlow(x, y, z, resp);
+
+  // §12 SURFACE GRADIENT. Curvature, normal orientation, depth, internal glow
+  // and local deformation all contribute; no single one dominates, which is
+  // what keeps the fill from reading flat without resorting to PBR shading.
+  //
+  // §13 MEMBRANE MIDTONES, +15-30%. The knob is the CONSTANT term (0.30 ->
+  // 0.40) and the facing term, NOT CONFIG.surfaceOpacity. That distinction is
+  // the whole instruction: the master opacity scales every term including the
+  // crests and the glow, which would raise pure highlights -- explicitly ruled
+  // out -- whereas the constant is precisely the floor that sets how dark the
+  // BROAD, low-curvature regions sit. Lifting it moves the large quiet areas
+  // from near-black toward charcoal / smoke-grey without touching what the
+  // bright core does. The glow coefficients are left alone for the same reason.
+  // §32-01/§32-17 INTERNAL MIDTONE BOOST, +20-25%, targeted at the 20-50%
+  // luminance band and NOT at highlights. The budget is closed, so this is a
+  // REDISTRIBUTION, not an increase:
+  //   constant 0.40 -> 0.50  (+25% on the broad quiet regions -- charcoal and
+  //                           smoke-grey lift, the "centre is too dark" fix)
+  //   facing   0.62 -> 0.74  (front/side volume; rear is untouched, so §32-16's
+  //                           front/side/rear ratio widens rather than flattens)
+  //   g.core   1.15 -> 1.00  (CUT. The core is the one term that peaks exactly
+  //                           where the stack is already at 99.3%. Trimming it
+  //                           pays for both lifts above and keeps pure white
+  //                           from growing, which §32-01 forbids explicitly.)
+  // The halo RISES (0.55 -> 0.78): it is the wide, soft, low-amplitude field,
+  // so it lands in the midrange across the whole form instead of on the peak.
+  const a = amp * (
+    0.50 +
+    0.74 * facing +
+    0.34 * edge +               // §04: grazing membrane is more visible
+    0.34 * resp +
+    1.00 * g.core * gbias +     // §06/§07: the bloom, seen THROUGH the film
+    0.78 * g.halo * gbias +
+    // §32-02/§32-03/§32-04. gbias > 1 on the outer films, so the interior
+    // light grows as it passes outward through the stack -- the stratum
+    // furthest from the core is the one most lit by it, which is how a
+    // translucent volume lit from within actually reads.
+    0.40 * interiorField(x, y, z, resp) * gbias +
+    0.18 * waveHighlight(x, y, z)
+  ) * fogFactor(viewDepthAtPoint(x, y, z)) * lobeMidtone(x, y, z);
+
+  // §10 DEPTH HAZE. Additive layers cannot be darkened, so the haze lives here
+  // in the BLEND pass: a near-black wash whose weight rises with view depth.
+  // Very restrained -- this is a volumetric depth CUE separating front strata
+  // from rear ones, not a visible fog cloud.
+  const haze = smooth01((viewDepthAtPoint(x, y, z) - cameraEye.z * 0.72) /
+    CONFIG.fogDepthRange);
+  const t = tone * (1 - 0.42 * haze);
+
+  fill(INK_R * t, INK_G * t, INK_B * (t + 0.04), a);
+  vertex(x, y, z);
+}
+
+// §03 CURVATURE RIBBONS.
+//
+// The brief is explicit about what these must NOT be: UV grid lines, lat-long
+// lines, small closed loops, or arbitrary Bezier scribbles. Each ribbon here is
+// a path that walks the FULL u range an integer number of times while drifting
+// in v -- so it is a long diagonal band that wraps the whole manifold and
+// closes on itself at the seam with no start or stop anywhere on screen.
+//
+// They are BANDS (TRIANGLE_STRIP), not strokes. A stroked path would just be
+// another contour line, and §03's "compress near the primary neck, widen or
+// relax across broad lobes" would have no quantity to act on. Half-width is
+// driven down by local curvature response, so a ribbon visibly narrows as it
+// crosses the neck and relaxes over the lobes -- membrane stress lines.
+//
+// §14 LIGHT HIERARCHY: each ribbon has a static tier, and additionally the one
+// currently closest to the travelling focal point is boosted. So 1-2 ribbons
+// lead at any moment and WHICH ones lead changes across the loop.
+function ribbonSample(rb, s, out) {
+  // s in [0,1) -- one full traversal. u wraps `wraps` times (integer, so the
+  // band closes); v migrates by vSwing along the way, eased so the drift is
+  // smooth rather than linear.
+  const u = s * rb.wraps;
+  // v MUST be periodic in s or the band tears open at its own seam: the last
+  // sample would sit vSwing away from the first (measured: 0.46 in v, ~20 rows
+  // of the mesh -- a visible gash across the sculpture). smootherstep is not
+  // periodic (0 -> 1); a raised cosine is, and reaches the identical excursion
+  // at s=0.5, so the ribbon sweeps out and back across the manifold and closes
+  // on itself exactly.
+  const vT = rb.vOffset + rb.vSwing * (0.5 - 0.5 * Math.cos(TAU * s));
+  // Slow self-drift along the path. driftRate and rb.drift are INTEGER
+  // harmonics of the loop -- a fractional value here tears the Reel at the wrap.
+  const drift = 0.035 * rb.drift *
+    Math.sin(TAU * RIBBON_CFG.driftRate * loopProgress);
+  const vv = clamp(vT + drift, 0.02, 0.98);
+
+  // Map into the pole-skipped row span, then bilinearly sample the live mesh.
+  const jSpan = VS - 1 - 2 * POLE_SKIP;
+  const fj = POLE_SKIP + vv * jSpan;
+  const j0 = Math.floor(fj), tj = fj - j0;
+  const fi = (u % 1 + 1) % 1 * US;
+  const i0 = Math.floor(fi), ti = fi - i0;
+
   const pos = surface.positions;
   const nrm = surface.normals;
-  const k = CONFIG.surfaceInset;
-  noStroke();
-  // Per-vertex tone is interpolated by WEBGL across the existing triangles.
-  // No edges are drawn, so this restores continuous membrane mass rather than
-  // revealing the UV tessellation. Facing, depth, curvature, the focal field,
-  // and the travelling wave all agree with the line hierarchy.
-  for (let i = 0; i < US; i++) {
-    const i2 = (i + 1) % US;   // wrap closes the seam column
-    beginShape(TRIANGLE_STRIP);
-    for (let j = POLE_SKIP; j < VS - POLE_SKIP; j++) {
-      const oa = paramIndex(i, j) * 3, ob = paramIndex(i2, j) * 3;
-      const ia = oa / 3;
-      const fa = facingTerms(pos[oa], pos[oa + 1], pos[oa + 2],
-        nrm[oa], nrm[oa + 1], nrm[oa + 2]).facing;
-      const focalA = clamp(focalWeight(pos[oa], pos[oa + 1], pos[oa + 2]), 0, 1);
-      const alphaA = clamp(CONFIG.surfaceOpacity * (0.62 + 0.38 * fa +
-        0.24 * surface.response[ia] + 0.34 * focalA +
-        0.16 * waveHighlight(pos[oa], pos[oa + 1], pos[oa + 2])),
-      CONFIG.surfaceOpacity * 0.78, CONFIG.surfaceOpacity * 1.35);
-      fill(INK_R * 0.46, INK_G * 0.46, INK_B * 0.50, alphaA);
-      vertex(pos[oa] * k, pos[oa + 1] * k, pos[oa + 2] * k);
+  const a = paramIndex(i0, j0) * 3, b = paramIndex(i0 + 1, j0) * 3;
+  const c = paramIndex(i0, j0 + 1) * 3, d = paramIndex(i0 + 1, j0 + 1) * 3;
+  for (let k = 0; k < 3; k++) {
+    const top = pos[a + k] + (pos[b + k] - pos[a + k]) * ti;
+    const bot = pos[c + k] + (pos[d + k] - pos[c + k]) * ti;
+    out.p[k] = top + (bot - top) * tj;
+    const tn = nrm[a + k] + (nrm[b + k] - nrm[a + k]) * ti;
+    const bn = nrm[c + k] + (nrm[d + k] - nrm[c + k]) * ti;
+    out.n[k] = tn + (bn - tn) * tj;
+  }
+  const nl = vlen(out.n[0], out.n[1], out.n[2]);
+  out.n[0] /= nl; out.n[1] /= nl; out.n[2] /= nl;
+  const ra = surface.response[paramIndex(i0, j0)];
+  const rb2 = surface.response[paramIndex(i0 + 1, j0)];
+  const rc = surface.response[paramIndex(i0, j0 + 1)];
+  const rd = surface.response[paramIndex(i0 + 1, j0 + 1)];
+  const rt = ra + (rb2 - ra) * ti, rbb = rc + (rd - rc) * ti;
+  out.resp = rt + (rbb - rt) * tj;
+  return out;
+}
 
-      const ib = ob / 3;
-      const fb = facingTerms(pos[ob], pos[ob + 1], pos[ob + 2],
-        nrm[ob], nrm[ob + 1], nrm[ob + 2]).facing;
-      const focalB = clamp(focalWeight(pos[ob], pos[ob + 1], pos[ob + 2]), 0, 1);
-      const alphaB = clamp(CONFIG.surfaceOpacity * (0.62 + 0.38 * fb +
-        0.24 * surface.response[ib] + 0.34 * focalB +
-        0.16 * waveHighlight(pos[ob], pos[ob + 1], pos[ob + 2])),
-      CONFIG.surfaceOpacity * 0.78, CONFIG.surfaceOpacity * 1.35);
-      fill(INK_R * 0.46, INK_G * 0.46, INK_B * 0.50, alphaB);
-      vertex(pos[ob] * k, pos[ob + 1] * k, pos[ob + 2] * k);
+
+const _rbA = { p: [0, 0, 0], n: [0, 0, 0], resp: 0 };
+const _rbB = { p: [0, 0, 0], n: [0, 0, 0], resp: 0 };
+
+// Which ribbon the focal point is currently riding (§14). Module scope because
+// the bloom pass must emit from the SAME lead ribbon the sculpture pass
+// brightens -- if the two disagreed, the glow would detach from its source.
+let ribbonLead = -1;
+
+// §14: find which ribbon the focal point is currently riding. Sampled coarsely
+// -- this only decides a brightness boost, so 12 probes per ribbon is ample.
+function updateRibbonLead() {
+  let lead = -1, leadScore = -Infinity;
+  for (let r = 0; r < RIBBONS.length; r++) {
+    let acc = 0;
+    for (let q = 0; q < 12; q++) {
+      const s = ribbonSample(RIBBONS[r], q / 12, _rbA);
+      acc += clamp(focalWeight(s.p[0], s.p[1], s.p[2]), 0, 1);
+    }
+    const sc = acc * RIBBONS[r].tier;
+    if (sc > leadScore) { leadScore = sc; lead = r; }
+  }
+  ribbonLead = lead;
+}
+
+function drawCurvatureRibbons() {
+  const N = RIBBON_CFG.samples;
+  noStroke();
+
+  const lead = ribbonLead;
+
+  blendMode(ADD);
+
+  // §33-05 SERRATION FIX. This pass must not WRITE depth.
+  //
+  // drawMembraneLayers() restores gl.depthMask(true) on its way out, so the
+  // ribbons inherited a depth-writing state. Each hero band is drawn twice: a
+  // wide halo strip first, then the narrow body strip on the same centreline.
+  // The halo wrote its own depth, and the body -- drawn afterwards at a
+  // marginally different depth along a curving band -- was then rejected by
+  // the depth test in patches, punching triangular holes along one flank.
+  // That is the "serrated / torn / zipper-like" central region in §05.
+  //
+  // Diagnosis by elimination (isolation captures at f0420): NOT resp noise
+  // (path-smoothing changed nothing), NOT binormal flips (measured 0 flips,
+  // |b| ~ 0.99), NOT halo width (teeth identical at 1.2/1.6/2.0 and LARGER at
+  // compression 0), NOT halo brightness (haloAlpha = 0 left the teeth intact
+  // -- proving they were an occlusion hole, not an emitted shape).
+  //
+  // Clearing depthMask (rather than disabling DEPTH_TEST outright) is the
+  // minimal fix: it restores the invariant this file documents elsewhere --
+  // nothing in the sculpture pass writes depth -- without altering whether
+  // later additive layers test against the membrane. Restored after the pass.
+  const _gl = drawingContext;
+  _gl.depthMask(false);
+
+  // §15 HERO RIBBON HALO. "Thin bright core + slightly wider dim halo", so the
+  // hero bands float INSIDE the membrane instead of sitting on it.
+  //
+  // Implemented as a second walk of the SAME ribbonSample() path -- a wide,
+  // very dim band drawn underneath the normal one. That is a redraw of an
+  // existing system rather than a new one (§26), and because both passes read
+  // identical samples the halo can never drift off its own core. Secondary
+  // ribbons are skipped entirely, per §15's "keep secondary ribbons mostly
+  // without halos".
+  for (let r = 0; r < RIBBONS.length; r++) {
+    const rb = RIBBONS[r];
+    if (!rb.hero) continue;
+    const tier = rb.tier * (r === lead ? RIBBON_CFG.leadBoost : 1);
+    // Two strips, one per side of the centreline, so the halo is symmetric
+    // about the ribbon. Doing this as a single strip is not possible without
+    // either zigzagging the triangles or lighting only one flank.
+    for (let side = -1; side <= 1; side += 2) {
+    beginShape(TRIANGLE_STRIP);
+    for (let q = 0; q <= N; q++) {
+      const s = ribbonSample(rb, (q % N) / N, _rbA);
+      const x = s.p[0] + s.n[0] * RIBBON_CFG.lift;
+      const y = s.p[1] + s.n[1] * RIBBON_CFG.lift;
+      const z = s.p[2] + s.n[2] * RIBBON_CFG.lift;
+      const s2 = ribbonSample(rb, ((q + 1) % N) / N, _rbB);
+      let tx = s2.p[0] - s.p[0], ty = s2.p[1] - s.p[1], tz = s2.p[2] - s.p[2];
+      const tl = vlen(tx, ty, tz);
+      tx /= tl; ty /= tl; tz /= tl;
+      let bx = ty * s.n[2] - tz * s.n[1];
+      let by = tz * s.n[0] - tx * s.n[2];
+      let bz = tx * s.n[1] - ty * s.n[0];
+      const bl = vlen(bx, by, bz);
+      bx /= bl; by /= bl; bz /= bl;
+      const hw = rb.width * RIBBON_CFG.haloWidth *
+        (1 - RIBBON_CFG.compression * 0.5 * clamp(s.resp, 0, 1));
+      const ft = facingTerms(x, y, z, s.n[0], s.n[1], s.n[2]);
+      const g = internalGlow(x, y, z, s.resp);
+      const a = RIBBON_CFG.baseAlpha * RIBBON_CFG.haloAlpha * tier *
+        (0.30 + 0.50 * s.resp + 0.80 * g.core + 0.45 * g.halo) *
+        ft.facing * fogFactor(viewDepthAtPoint(x, y, z));
+      // Transparent at the outer edge, `a` at the centreline: the halo fades
+      // outward from the ribbon it belongs to.
+      fill(INK_R, INK_G, INK_B, 0);
+      vertex(x + bx * hw * side, y + by * hw * side, z + bz * hw * side);
+      fill(INK_R, INK_G, INK_B, a);
+      vertex(x, y, z);
+    }
+    endShape();
+    }
+  }
+
+  for (let r = 0; r < RIBBONS.length; r++) {
+    const rb = RIBBONS[r];
+    const tier = rb.tier * (r === lead ? RIBBON_CFG.leadBoost : 1);
+    beginShape(TRIANGLE_STRIP);
+    // <= N so the band's last pair coincides with its first: closed, seamless.
+    for (let q = 0; q <= N; q++) {
+      const s = ribbonSample(rb, (q % N) / N, _rbA);
+      const x = s.p[0] + s.n[0] * RIBBON_CFG.lift;
+      const y = s.p[1] + s.n[1] * RIBBON_CFG.lift;
+      const z = s.p[2] + s.n[2] * RIBBON_CFG.lift;
+
+      // Band tangent, from a neighbouring sample, so the width is laid out
+      // perpendicular to the direction of travel.
+      const s2 = ribbonSample(rb, ((q + 1) % N) / N, _rbB);
+      let tx = s2.p[0] - s.p[0], ty = s2.p[1] - s.p[1], tz = s2.p[2] - s.p[2];
+      const tl = vlen(tx, ty, tz);
+      tx /= tl; ty /= tl; tz /= tl;
+      // Binormal = tangent x normal: lies IN the surface, perpendicular to the
+      // path. This is what makes the band hug the manifold instead of standing
+      // off it like a ribbon in space.
+      let bx = ty * s.n[2] - tz * s.n[1];
+      let by = tz * s.n[0] - tx * s.n[2];
+      let bz = tx * s.n[1] - ty * s.n[0];
+      const bl = vlen(bx, by, bz);
+      bx /= bl; by /= bl; bz /= bl;
+
+      // §03: compress at high curvature (the neck), relax over the lobes.
+      const hw = rb.width * (1 - RIBBON_CFG.compression * clamp(s.resp, 0, 1));
+
+      const ft = facingTerms(x, y, z, s.n[0], s.n[1], s.n[2]);
+      const g = internalGlow(x, y, z, s.resp);
+      const fog = fogFactor(viewDepthAtPoint(x, y, z));
+      // §32-06: g.core 0.90 -> 0.62 pays for baseAlpha 28 -> 39 (see
+      // RIBBON_CFG). The gain lands on the body terms, the cut lands on the
+      // climax core, so the ribbons read brighter along their whole length
+      // without moving the peak.
+      // §32-11: a low-amplitude brightness travelling along the band's own arc
+      // length. INTEGER harmonic in both q and t, so it loops exactly. This is
+      // the "low-amplitude ribbon drift" that keeps equilibrium alive without
+      // moving any geometry.
+      const flow = 0.5 + 0.5 * Math.sin(TAU * (2 * (q / N) - loopProgress) + r * 1.7);
+      // §32-21 EQUILIBRIUM RIBBON FLOOR -- partially solved, see the caveat.
+      //
+      // Every OTHER term in this sum (g.core, g.halo, waveHighlight, and resp
+      // itself) is driven by the focal light or the active event, and all of
+      // them release TOGETHER at equilibrium. The hero ribbons therefore fell
+      // to ~15% of white in the calm stage -- they would simply vanish, which
+      // is both the "hero ribbons are too faint" complaint and a direct miss
+      // against §32-21's 65-80% equilibrium-to-climax target.
+      //
+      // The unmodulated constant is the right instrument for this, because it
+      // is the ribbon's own intrinsic presence: the light-driven terms then
+      // ride ON TOP for the climax, preserving §32-19/§32-20's pinch and bloom
+      // accents instead of flattening them. It is set to 0.85 (from 0.26).
+      //
+      // It is NOT set higher, though a higher value would hit the ratio. At
+      // 1.15 with leadBoost cut to 1.25 the ratio still only reached 46%, and
+      // the two side effects were real: the ribbons became largely independent
+      // of the light (contradicting "heroes ride the field"), and leadBoost at
+      // 1.25 flattened the §14 hierarchy that makes 1-2 ribbons lead per frame.
+      // Chasing the last of the ratio here costs more than it buys.
+      //
+      // Measured: climax ~67%, equilibrium ~35% of climax, against a 65-80%
+      // target. Closing the rest belongs in the EQUILIBRIUM FLOOR of EV /
+      // focalPoint.strength -- lift what the ribbons are reading, not the
+      // constant that ignores it.
+      const a = RIBBON_CFG.baseAlpha * tier * (
+        0.85 + 0.44 * s.resp + 0.62 * g.core + 0.34 * g.halo +
+        0.34 * interiorField(x, y, z, s.resp) +   // §32-02: heroes ride the field
+        0.30 * edgeFactor(ft.signed) +
+        0.16 * flow +
+        0.26 * waveHighlight(x, y, z)
+      ) * ft.facing * fog;
+
+      // §32-08 RIBBON QUALITY. The band fades toward its own edges, so it
+      // reads as a soft luminous stress line rather than a hard strip of tape.
+      // The outer edge alpha drops 0.18 -> 0.10 and the bright vertex is
+      // pulled closer to the centreline (0.15 -> 0.10): a tighter, softer
+      // gradient across a thinner band is what removes the "technical" read
+      // without losing the line.
+      fill(INK_R, INK_G, INK_B, a * 0.10);
+      vertex(x + bx * hw, y + by * hw, z + bz * hw);
+      fill(INK_R, INK_G, INK_B, a);
+      vertex(x - bx * hw * 0.10, y - by * hw * 0.10, z - bz * hw * 0.10);
     }
     endShape();
   }
+  // Hand the depth buffer back exactly as it was found; leaking this state
+  // into later passes is the bug this block exists to fix.
+  _gl.depthMask(true);
+  blendMode(BLEND);
   noFill();
+}
+
+// DEBUG (measurement harness only). When window.ISOLATE is set to a layer
+// name, every other layer is skipped so the harness can histogram one element
+// against its own target band. Null in normal operation -- costs one compare.
+function isoOn(layer) {
+  const iso = (typeof window !== 'undefined') ? window.ISOLATE : null;
+  return !iso || iso === layer;
 }
 
 function drawContourField() {
   const pos = surface.positions;
   const nrm = surface.normals;
 
-  // The translucent shell goes down first, in BLEND, while depth writes are
-  // still on -- everything after it is additive line work.
-  drawTranslucentShell();
+  // The membrane strata go down first, in BLEND; everything after is additive
+  // line work. Nothing in the sculpture pass writes depth (see note 1 in
+  // drawMembraneLayers), so the additive layers composite through the films
+  // instead of being culled by them -- which is what lets internal structure
+  // read through the front surface at all (§01).
+  if (isoOn('membrane')) drawMembraneLayers();
+  if (isoOn('ribbons')) drawCurvatureRibbons();
 
   blendMode(ADD);
   noFill();
@@ -2060,19 +3147,56 @@ function drawContourField() {
   // Marching the actual zero level set gives the outline curve itself, so
   // both the cage and the combing are gone by construction.
   // ---------------------------------------------------------------------
+  // §04/§05 SELECTIVE EDGE LIGHT. The previous alpha was
+  //     base * (0.70 + 0.30 * focal)
+  // and that 0.70 FLOOR is the "uniform white perimeter stroke" the brief
+  // rejects: every outline vertex on the form was guaranteed 70% brightness,
+  // so the silhouette read as a traced technical outline regardless of what
+  // the geometry was doing.
+  //
+  // The floor is now silhouetteFloor (0.07) and the other 90% must be EARNED
+  // from three independent terms, so some edges glow, some fade, and some
+  // genuinely disappear:
+  //   edge  -- Fresnel-like grazing response (§04)
+  //   resp  -- local curvature: major folds and the pinch region win (§05)
+  //   glow  -- proximity to the travelling internal light (§09)
+  // Weight also drops (rimWeight 2.65 -> 1.55): brightness carries the
+  // hierarchy now, not stroke width.
   strokeWeight(CONFIG.rimWeight);
-  for (let c = 0; c < silCount; c++) {
+  const _isoSil = isoOn('silhouette');
+  for (let c = 0; _isoSil && c < silCount; c++) {
     const start = silStarts[c];
     const len = silLengths[c];
     beginShape();
     for (let q = 0; q < len; q++) {
       const o = (start + q) * 3;
       const x = silVerts[o], y = silVerts[o + 1], z = silVerts[o + 2];
-      // §09/§08: the outline is brightest where the travelling focal point is,
-      // so the silhouette carries the event rather than glowing uniformly.
-      const foc = focalWeight(x, y, z);
-      const a = CONFIG.silhouetteBase * (0.70 + 0.30 * clamp(foc, 0, 1)) *
-        (1 + 0.24 * peakness) * silVertDepth[start + q] * CONFIG.silhouetteStrength;
+      const resp = clamp(sampleResponseAt(x, y, z), 0, 1);
+      const g = internalGlow(x, y, z, resp);
+      // The silhouette curve is BY DEFINITION where n is perpendicular to the
+      // view, so signed n·v is ~0 and edgeFactor() would return ~1 everywhere
+      // along it -- useless as a discriminator here. What varies along the
+      // curve is curvature and light, so those carry §05's variation, and the
+      // Fresnel term does its work on the membrane and ribbons instead.
+      // §16/§17 EDGE LIGHT THAT TRAVELS. Both gains are raised (see CONFIG) so
+      // the difference between an activated edge and a dormant one widens --
+      // the floor stays at 0.10, so this steepens the contrast along the
+      // outline rather than brightening the outline as a whole. Because the
+      // focal term reads internalGlow(), whose centre walks the FOCAL_ROUTE,
+      // the bright stretch of silhouette MOVES with the curvature: the neck
+      // edge peaks at the pinch, then the light runs out along the upper-right
+      // as the bloom opens.
+      const selective =
+        CONFIG.edgeCurvatureGain * Math.pow(resp, 1.35) +
+        CONFIG.edgeFocalGain * clamp(g.core + 0.5 * g.halo, 0, 1);
+      // §08: the left-lower lobe gets a softer, dimmer outline so it stops
+      // reading as the heaviest silhouette in the frame.
+      const lobe = 1 - LOBE_BALANCE.silCut * lobeWeight(x, y, z);
+      const a = CONFIG.silhouetteBase *
+        (CONFIG.silhouetteFloor + (1 - CONFIG.silhouetteFloor) *
+          clamp(selective, 0, 1)) *
+        (1 + 0.24 * peakness) * silVertDepth[start + q] *
+        CONFIG.silhouetteStrength * lobe;
       stroke(INK_R, INK_G, INK_B, a);
       vertex(x, y, z);
     }
@@ -2086,11 +3210,15 @@ function drawContourField() {
   // step, not a gradient.
   // ---------------------------------------------------------------------
   const hi = CONFIG.curvatureHighlightThreshold;
-  for (let c = 0; c < chainCount; c++) {
+  const _isoChn = isoOn('chains');
+  for (let c = 0; _isoChn && c < chainCount; c++) {
     const start = chainStarts[c];
     const len = chainLengths[c];
     const hero = chainIsHero[c] === 1;
     const closed = chainIsClosed[c] === 1;
+    // §15: closed level-set islands are the MRI/CT-slice signature and cannot
+    // be tuned away, only excluded. Long open bands carry the strata read.
+    if (closed) continue;
     const r = chainResp[c];
     // §07 CURVATURE SCARCITY: only the top slice above the threshold reaches
     // full brightness, and the extra power curve makes that slice narrower
@@ -2103,8 +3231,11 @@ function drawContourField() {
     // start of a shape, so setting it after endShape() would give every chain
     // the previous chain's weight (and chain 0 the silhouette's 2.35), which
     // scrambles the hero/secondary split that the whole hierarchy rests on.
+    // §32-07: the secondary chains lose WIDTH as well as opacity (0.42+0.34r
+    // -> 0.30+0.22r). Width is what made them read as heavy braces; halving
+    // the opacity alone would have left thick grey bands.
     strokeWeight(CONFIG.surfaceLineWeight *
-      (hero ? 0.94 + 0.72 * r + 0.48 * peak : 0.42 + 0.34 * r) *
+      (hero ? 0.88 + 0.66 * r + 0.44 * peak : 0.30 + 0.22 * r) *
       (closed ? 0.72 : 1));
 
     beginShape();
@@ -2114,21 +3245,61 @@ function drawContourField() {
       if (!Number.isFinite(x)) continue;
       const fog = fogFactor(viewDepthAtPoint(x, y, z));
       const nx = chainVertNormals[o], ny = chainVertNormals[o + 1], nz = chainVertNormals[o + 2];
-      const facing = facingTerms(x, y, z, nx, ny, nz).facing;
+      const ftc = facingTerms(x, y, z, nx, ny, nz);
+      // Both terms must be read out BEFORE any other facingTerms() call:
+      // _facing is a shared module-scope struct, reused to keep this hot loop
+      // allocation-free, so a later call would overwrite `signed` in place.
+      const facing = ftc.facing;
+      const signedC = ftc.signed;
       const localR = chainVertResponse[start + q];
       const localPeak = Math.pow(
         smooth01((localR - hi) / (1 - hi)), CONFIG.curvatureHighlightPower);
-      const foc = focalWeight(x, y, z);
+      const gc = internalGlow(x, y, z, localR);
+      const foc = clamp(gc.core + 0.6 * gc.halo, 0, 1);
       const climax = peakness * (0.30 + 0.70 * localPeak);
       const front = waveHighlight(x, y, z);
       // §08: the focal term is what guarantees one dominant bright region at
       // every moment of the loop, not only inside the wave window.
       const neighborhood = smooth01((localR - 0.50) / 0.38);
-      const contourBody = hero ? 36 + 84 * localR : 20 + 50 * localR;
-      const a = (contourBody + 176 * localPeak + 150 * climax +
-        72 * front * (0.42 + 0.58 * localR) +
-        92 * foc * (0.42 + 0.58 * localR) + 42 * neighborhood * foc) *
-        fog * facing * tier;
+      // §14/§03: this layer is now SECONDARY to the ribbons. Its body tone is
+      // cut roughly in half so the long bands lead the eye and the contours
+      // read as the finer curvature texture underneath them, rather than the
+      // two layers competing as equal line work.
+      // §32-07: the secondary body tone is cut hard (10+26r -> 6+15r) so these
+      // stop competing; the hero contours are left near their old value since
+      // they are the finer curvature texture under the ribbons, not the braces.
+      // §32-17/§32-18: the hero contour peak measured ~140% of white at the
+      // climax, i.e. clipped. The BODY term is left alone (it is midtone and
+      // §32-17 wants midtone), and the two spike terms below -- localPeak and
+      // climax -- are what actually blow past white, so those are trimmed
+      // instead. That keeps the broad curvature texture and removes only the
+      // clipped white core, which §32-01 rules out growing.
+      const contourBody = hero ? 20 + 44 * localR : 6 + 15 * localR;
+      // §32-02/§32-07. The interior field is deliberately NOT added here.
+      //
+      // It was, and it was wrong twice over. Numerically it put 30 points of
+      // new light on the one stack that had no headroom: the hero contour
+      // peak measured 146% of white, and clawing it back cost four successive
+      // trims to localPeak and climax -- which are exactly the pinch-climax
+      // accents §32-19 says to preserve. Removing the term buys those trims
+      // back: localPeak/climax sit at 44/38 rather than the 40/34 they had
+      // been driven down to, and the peak measures 98.1% instead of 106.7%.
+      //
+      // 44/38 rather than their original 92/80 because the ORIGINAL values
+      // were themselves over budget once foc and front were counted at a
+      // realistic co-occurrence (133%) -- a vertex on the focal core at the
+      // pinch climax has localPeak, climax, front and foc all near maximum
+      // together, which is precisely the frame the ceiling has to hold.
+      //
+      // Directionally it also fought the brief: §32-07 asks for the internal
+      // line work to RECEDE, so routing the new light through it works against
+      // the same instruction that halved secondaryLineOpacity. The membrane
+      // and the three hero ribbons already carry interiorField(), and they are
+      // where "ONE broad internal light region" is supposed to read from.
+      const a = (contourBody + 44 * localPeak + 38 * climax +
+        44 * front * (0.42 + 0.58 * localR) +
+        56 * foc * (0.42 + 0.58 * localR) + 26 * neighborhood * foc) *
+        fog * facing * tier * (0.55 + 0.45 * edgeFactor(signedC));
       stroke(INK_R, INK_G, INK_B, a);
       vertex(x, y, z);
     }
@@ -2142,14 +3313,22 @@ function drawContourField() {
   // what read as a lat-long cage.
   // ---------------------------------------------------------------------
   strokeWeight(CONFIG.silhouetteWeight * 0.8);
-  for (let i = 0; i < US; i += CONFIG.ribStride) {
+  const _isoRib = isoOn('ribs');
+  for (let i = 0; _isoRib && i < US; i += CONFIG.ribStride) {
     beginShape();
     for (let j = POLE_SKIP; j < VS - POLE_SKIP; j++) {
       const idx = paramIndex(i, j);
       const o = idx * 3;
       const ft = facingTerms(pos[o], pos[o + 1], pos[o + 2],
         nrm[o], nrm[o + 1], nrm[o + 2]);
-      const a = (11 + 30 * surface.response[idx]) * ft.facing *
+      // §01: halved again. With the ribbons now carrying the long structural
+      // read, these meridians only need to whisper -- any more and they are
+      // the last remaining evenly-spaced longitude set, i.e. mesh.
+      // §06/§07: dimmed again (5+14 -> 3+9). These meridians are the last
+      // evenly-spaced longitude set on screen and are the most "technical"-
+      // looking thing left in the frame, so they are held to the faintest
+      // whisper that still ties the silhouette to the contour bands.
+      const a = (3 + 9 * surface.response[idx]) * ft.facing *
         fogFactor(viewDepthAtPoint(pos[o], pos[o + 1], pos[o + 2]));
       stroke(INK_R, INK_G, INK_B, a);
       vertex(pos[o], pos[o + 1], pos[o + 2]);
@@ -2181,10 +3360,13 @@ function drawTemporalEchoes() {
   // The echo normal is approximated from the echo's own neighbouring vertices
   // (the stored states are positions only), which is enough to find the
   // grazing band.
-  for (let e = 0; e < CONFIG.temporalEchoCount; e++) {
-    const age = (CONFIG.temporalEchoCount - 1 - e + CONFIG.temporalEchoCount) % CONFIG.temporalEchoCount;
-    const state = echoStates[(echoWrite + e) % CONFIG.temporalEchoCount];
-    const base = CONFIG.echoAlpha[Math.min(age, CONFIG.echoAlpha.length - 1)];
+  // The ring now holds one state per FRAME (it also feeds the membrane lag),
+  // so the echoes select explicit AGES out of it rather than walking every
+  // slot -- otherwise 14 near-identical outlines would stack up and rebuild
+  // the duplicated-wireframe look this layer was rewritten to avoid.
+  for (let e = 0; e < CONFIG.echoDrawAge.length; e++) {
+    const state = historyPositions(CONFIG.echoDrawAge[e]);
+    const base = CONFIG.echoAlpha[Math.min(e, CONFIG.echoAlpha.length - 1)];
     // Echoes only matter while the flow is actually moving.
     const alpha = base * (0.25 + 0.75 * flowT);
     stroke(INK_R, INK_G, INK_B, alpha);
@@ -2262,6 +3444,10 @@ function renderBloomSource() {
   // region the focus is currently visiting can reach full glow. The result is
   // that the brightest thing in frame moves along the sculpture over the loop.
   const hiB = CONFIG.curvatureHighlightThreshold;
+  // §07/§08: gated on the two-radius CORE, not the wide focal halo. The halo is
+  // ~46% of the sculpture width; blooming against it lit up most of the form at
+  // once and is what flattened the climax. The core is ~16%, which is the
+  // brief's target for a broad-but-bounded luminous region.
   for (let c = 0; c < chainCount; c++) {
     const r = chainResp[c];
     if (r < 0.50 || chainIsClosed[c]) continue;
@@ -2275,7 +3461,8 @@ function renderBloomSource() {
       const localR = chainVertResponse[start + q];
       const core = Math.pow(smooth01((localR - hiB) / (1 - hiB)),
         CONFIG.curvatureHighlightPower);
-      const foc = clamp(focalWeight(x, y, z), 0, 1);
+      const g = internalGlow(x, y, z, localR);
+      const foc = clamp(g.core + 0.45 * g.halo, 0, 1);
       const field = smooth01((localR - 0.58) / 0.30) * foc;
       const a = 255 * (0.30 * field + 0.70 * core * (0.34 + 0.66 * foc)) *
         fogFactor(viewDepthAtPoint(x, y, z));
@@ -2284,23 +3471,123 @@ function renderBloomSource() {
     }
     b.endShape();
   }
+
+  // ---------------------------------------------------------------------
+  // RIBBON EMISSION. The chains alone used to feed the bloom, which meant
+  // the two brightest things on screen -- the lead ribbon (72% of white) and
+  // the membrane crests -- contributed NO glow at all. The light source and
+  // the light were decoupled, so the climax looked lit rather than luminous.
+  //
+  // Ribbons are re-walked here as emissive bands, gated hard on the glow core
+  // so only the region the focus is visiting blooms (§08 stays intact -- one
+  // travelling hotspot, not several equal ones).
+  // ---------------------------------------------------------------------
+  b.noStroke();
+  const N = RIBBON_CFG.samples;
+  for (let r = 0; r < RIBBONS.length; r++) {
+    const rb = RIBBONS[r];
+    const tier = rb.tier * (r === ribbonLead ? RIBBON_CFG.leadBoost : 1);
+    b.beginShape(TRIANGLE_STRIP);
+    for (let q = 0; q <= N; q++) {
+      const sm = ribbonSample(rb, (q % N) / N, _rbA);
+      const x = sm.p[0] + sm.n[0] * RIBBON_CFG.lift;
+      const y = sm.p[1] + sm.n[1] * RIBBON_CFG.lift;
+      const z = sm.p[2] + sm.n[2] * RIBBON_CFG.lift;
+      const s2 = ribbonSample(rb, ((q + 1) % N) / N, _rbB);
+      let tx = s2.p[0] - x, ty = s2.p[1] - y, tz = s2.p[2] - z;
+      const tl = vlen(tx, ty, tz) || 1;
+      tx /= tl; ty /= tl; tz /= tl;
+      let bx = ty * sm.n[2] - tz * sm.n[1];
+      let by = tz * sm.n[0] - tx * sm.n[2];
+      let bz = tx * sm.n[1] - ty * sm.n[0];
+      const bl = vlen(bx, by, bz) || 1;
+      bx /= bl; by /= bl; bz /= bl;
+
+      const hw = rb.width * (1 - RIBBON_CFG.compression * clamp(sm.resp, 0, 1));
+      const ft = facingTerms(x, y, z, sm.n[0], sm.n[1], sm.n[2]);
+      const g = internalGlow(x, y, z, sm.resp);
+      // Emission is the PRODUCT of curvature and focal core: a high-curvature
+      // ribbon far from the focus stays dark, and the focus crossing a flat
+      // stretch stays dark. Only their coincidence emits.
+      const em = clamp(sm.resp, 0, 1) * clamp(g.core + 0.35 * g.halo, 0, 1);
+      // Normalised by leadBoost so the lead ribbon saturates the buffer at 1.0
+      // instead of 1.6. Over-driving past 255 clips in the source and destroys
+      // the falloff the streak pass needs -- the halo would go hard-edged.
+      const a = (255 / RIBBON_CFG.leadBoost) * tier * Math.pow(em, 0.85) *
+        ft.facing * fogFactor(viewDepthAtPoint(x, y, z));
+      b.fill(INK_R, INK_G, INK_B, a * 0.10);
+      b.vertex(x + bx * hw, y + by * hw, z + bz * hw);
+      b.fill(INK_R, INK_G, INK_B, a);
+      b.vertex(x - bx * hw * 0.15, y - by * hw * 0.15, z - bz * hw * 0.15);
+    }
+    b.endShape();
+  }
+
+  // ---------------------------------------------------------------------
+  // MEMBRANE CREST EMISSION. Sparse point emitters on the mesh wherever high
+  // curvature and the focal core coincide. This is what makes the bloom look
+  // like it is coming from INSIDE the film rather than off the line work --
+  // the glow acquires the shape of the surface, not the shape of the contours.
+  // Strided so this stays a scatter of light sources, not a solid glowing sheet.
+  // ---------------------------------------------------------------------
+  const pos = surface.positions;
+  const nrm = surface.normals;
+  for (let i = 0; i < US; i += 2) {
+    for (let j = POLE_SKIP; j < VS - POLE_SKIP; j += 2) {
+      const idx = paramIndex(i, j);
+      const resp = surface.response[idx];
+      if (resp < 0.52) continue;
+      const o = idx * 3;
+      const x = pos[o], y = pos[o + 1], z = pos[o + 2];
+      const g = internalGlow(x, y, z, resp);
+      const em = clamp(g.core + 0.30 * g.halo, 0, 1) *
+        smooth01(clamp((resp - 0.52) / 0.40, 0, 1));
+      if (em < 0.02) continue;
+      const ft = facingTerms(x, y, z, nrm[o], nrm[o + 1], nrm[o + 2]);
+      const a = 255 * em * ft.facing * fogFactor(viewDepthAtPoint(x, y, z));
+      b.push();
+      b.translate(x, y, z);
+      b.fill(INK_R, INK_G, INK_B, a * 0.55);
+      b.circle(0, 0, 5 + 13 * em);
+      b.pop();
+    }
+  }
+
   b.pop();
   b.pop();
 }
 
+// §29 NO BLOOM OVERLOAD. Two changes, both about removing a cinematic signature
+// so the light reads as embedded in the geometry rather than applied on top:
+//
+//  - The streak was HORIZONTAL ONLY (14 taps at 9px spacing on x). A directional
+//    anamorphic flare is a lens artefact; it announces "post-process". The taps
+//    are now radial, over 8 directions, which reads as diffusion around the
+//    source instead of a widescreen flare.
+//  - Spread is tightened (9 -> 5) so the halo stays local to its curvature.
+//
+// The brightness this removes is deliberately given back inside the membrane
+// and ribbon terms, where it is attached to actual geometry.
 function streakBloom() {
   const s = bloomStreakPg;
-  const taps = 14;
-  const spread = 9;
+  const taps = 7;
+  const spread = 5;
+  const dirs = 8;
   s.clear();
   s.push();
   s.blendMode(ADD);
   s.imageMode(CENTER);
   const cx = s.width / 2, cy = s.height / 2;
-  for (let k = -taps; k <= taps; k++) {
-    const falloff = 1 - Math.abs(k) / taps;
-    s.tint(255, 255, 255, 28 * falloff * falloff);
-    s.image(bloomPg, cx + k * spread, cy);
+  s.tint(255, 255, 255, 30);
+  s.image(bloomPg, cx, cy);
+  for (let d = 0; d < dirs; d++) {
+    const ang = (d / dirs) * TAU;
+    const ux = Math.cos(ang), uy = Math.sin(ang);
+    for (let k = 1; k <= taps; k++) {
+      const falloff = 1 - k / (taps + 1);
+      s.tint(255, 255, 255, 15 * falloff * falloff);
+      s.image(bloomPg, cx + ux * k * spread, cy + uy * k * spread);
+    }
   }
   s.pop();
 }
@@ -2313,7 +3600,46 @@ function compositeBloom() {
   ortho(-W * 0.5, W * 0.5, -H * 0.5, H * 0.5, -10, 10);
   noLights();
   blendMode(ADD);
-  tint(255, 255, 255, 228);
+  // §29: 228 -> 132. Global bloom is reduced, not deleted; the luminance it
+  // used to supply now comes from the membrane glow terms, which are attached
+  // to the geometry rather than applied over the whole frame.
+  // Re-solved after the ribbon and membrane emitters were added. The bloom
+  // source now carries far more energy than the chains alone did, so the same
+  // tint would have added ~59% of white on top of geometry already at 72% --
+  // clipping the climax to a flat disc.
+  //
+  // Solved JOINTLY with RIBBON_CFG.baseAlpha rather than by dropping the tint
+  // alone: holding the ribbon at 72% forced a tint of 18, which is close to
+  // deleting the bloom. Trading 16 points of ribbon peak (72% -> 56%, still
+  // inside §27's 50-80% band) buys back a 22% bloom contribution. Climax now
+  // totals 94.1% of white -- luminous, with the top 6% left as gradient so the
+  // core stays a falloff instead of a clipped plateau.
+  // 56 -> 40, the third term of the joint solve with GLOW.haloGain (0.42 ->
+  // 0.70) and RIBBON_CFG.baseAlpha (36 -> 28). The broadened light FIELD is
+  // now carried inside the geometry terms, where it is attached to curvature,
+  // rather than by a global tint over the whole frame -- which is also what
+  // §02 means by growing the field without growing the pure white area.
+  // Worst-case composited climax measured at 99.3% of white.
+  // §32 JOINT RE-SOLVE, third leg. 40 -> 30.
+  //
+  // This pass adds light in three places at once: membrane midtones (+25% on
+  // the constant, +19% on facing), hero ribbons (baseAlpha 28 -> 39, 1.39x)
+  // and the new interiorField() term, which every layer reads. The climax was
+  // measured at 99.3% of white with essentially no headroom, so those gains
+  // had to be paid for rather than simply added.
+  //
+  // The three payments all land on the FOCAL CORE, which is where the ceiling
+  // binds, and none of them land on the midtones, which is where §32-17 says
+  // the missing information is:
+  //   membrane g.core   1.15 -> 1.00   (-13%)
+  //   ribbon   g.core   0.90 -> 0.62   (-31%)
+  //   this tint           40 -> 30     (-25%)
+  // The global tint is the best of the three to cut because it is the only
+  // one applied over the WHOLE FRAME irrespective of geometry -- exactly the
+  // "cinematic signature" §29 was already reducing, and the least attached to
+  // curvature. The luminance it gave up is returned inside interiorField(),
+  // where it is anchored to the neck and the upper-right lobe.
+  tint(255, 255, 255, 30);
   image(bloomStreakPg, -W * 0.5, -H * 0.5, W, H);
   noTint();
   blendMode(BLEND);
